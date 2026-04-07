@@ -16,16 +16,23 @@ done
 sleep 10 # 模块运行通常比脚本慢一点点，减少延迟
 
 # 检测 Box 是否运行
-# 多重检测：进程 + 端口
+# Box 官方级“三保险”检测：PID文件 + 多进程扫描 + 端口探测
 check_box_running() {
-    # 1. 进程检测
-    if pidof box > /dev/null 2>&1; then
-        return 0
-    fi
-    # 2. 端口探测 (给 Clash API 1秒响应)
+    # 1. 优先检查官方物理 PID 文件
+    [ -f "/data/adb/box/run/box.pid" ] && return 0
+    
+    # 2. 扫描所有可能的内核进程名 (对标 Box start.sh)
+    for core in "mihomo" "sing-box" "xray" "v2fly" "box"; do
+        if pidof "$core" > /dev/null 2>&1; then
+            return 0
+        fi
+    done
+
+    # 3. 端口 API 探测作为最后兜底
     if curl -s --connect-timeout 1 "$API/version" > /dev/null 2>&1; then
         return 0
     fi
+
     return 1
 }
 
@@ -108,7 +115,9 @@ while true; do
     COUNT=$((COUNT + 1))
     [ -z "$WATCH_MAP" ] && COUNT=0
     
-    DISPLAY_STATUS="[💎 运行中 | 内核: ${CORE_TYPE:-检测中} | 监视: ${COUNT}个 | 周期: ${INTERVAL}min]"
+    LAST_TIME=$(date "+%H:%M")
+    DISPLAY_STATUS="[💎 运行中 | 监视:${COUNT}个 | 周期:${INTERVAL}min | 更新:${LAST_TIME}]"
+    
     if ! check_box_running; then
         DISPLAY_STATUS="[❌ Box未运行 | 更新器待命]"
     fi
