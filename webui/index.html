@@ -193,29 +193,26 @@
             </div>
         </div>
 
-        <div class="card">
-            <div class="label" style="margin-bottom: 12px;">配置文件关联</div>
-            <select id="config-selector">
-                <option value="">-- 请选择主配置文件 --</option>
-                <option value="/data/adb/box/sing-box/config.json">/data/adb/box/sing-box/config.json</option>
-                <option value="/data/adb/box/mihomo/config.yaml">/data/adb/box/mihomo/config.yaml</option>
-                <option value="custom">手动输入自定义路径...</option>
-            </select>
-            <input type="text" id="custom-config-path" placeholder="请输入完整路径..." style="display:none; width:100%; padding:10px; background:rgba(0,0,0,0.3); border:1px solid #334155; color:#fff; border-radius:8px; margin-bottom:12px; outline:none;">
+        <div class="card" id="config-detector-card">
+            <div class="label" style="margin-bottom: 8px;">核心与配置发现 (基于 settings.ini)</div>
+            <div id="detector-status" style="padding: 10px; background: rgba(0,0,0,0.2); border-radius: 10px; border: 1px dashed rgba(255, 255, 255, 0.2);">
+                <div style="font-size: 0.8rem; color: #94a3b8;">当前核心: <span id="detected-core" style="color: #60a5fa;">检测中...</span></div>
+                <div style="font-size: 0.7rem; color: #64748b; margin-top: 4px; word-break: break-all;">关联路径: <span id="detected-conf-path" style="color: #a78bfa;">-</span></div>
+            </div>
             
-            <div id="mapping-container" style="max-height: 200px; overflow-y: auto; margin-bottom: 15px; display: none;">
-                <div class="label" style="font-size: 0.75rem; margin-bottom: 8px;">发现订阅项目 (请勾选需要守护的项目)</div>
+            <div id="mapping-container" style="max-height: 250px; overflow-y: auto; margin-top: 15px; display: none;">
+                <div class="label" style="font-size: 0.75rem; margin-bottom: 8px;">订阅更新项目 (已自动解析)</div>
                 <div id="mapping-list"></div>
             </div>
 
-            <div class="label-group">
+            <div class="label-group" style="margin-top: 15px;">
                 <span class="label">更新周期</span>
                 <div style="display: flex; align-items: center;">
                     <input type="number" id="interval-num" min="1" max="1440" value="30" style="background: rgba(0,0,0,0.3); border: 1px solid #334155; color: #fff; padding: 5px 10px; border-radius: 8px; width: 80px; text-align: center; font-family: inherit; font-size: 1.1rem; outline: none;">
                     <span class="value" style="margin-left: 10px; font-size: 1rem; color: #94a3b8;">min</span>
                 </div>
             </div>
-            <button id="save-btn" style="margin-top: 15px;">保存配置并启动映射</button>
+            <button id="save-btn" style="margin-top: 15px;">保存配置并启动监控</button>
         </div>
 
         <div class="card">
@@ -242,63 +239,70 @@
         const CONF_PATH = '/storage/emulated/0/Android/sub_config.conf';
         const LOG_PATH = '/storage/emulated/0/Android/sub.log';
 
-        // 基础显示控件
-        const intervalInput = document.getElementById('interval-num');
-        const logBox = document.getElementById('log-box');
-        const boxStatusDisp = document.getElementById('box-status');
-        const mtimeDisp = document.getElementById('mtime-val');
-        const boxBinDisp = document.getElementById('box-bin');
-        const boxNetDisp = document.getElementById('box-net');
-        const boxProxyDisp = document.getElementById('box-proxy');
-        const boxPidDisp = document.getElementById('box-pid');
-        const boxVersionDisp = document.getElementById('box-version');
+        const SETTINGS_PATH = '/data/adb/box/box/settings.ini';
+        let detectedMainConf = '';
 
-        // 新增配置映射控件
-        const configSelector = document.getElementById('config-selector');
-        const customConfigInput = document.getElementById('custom-config-path');
-        const mappingContainer = document.getElementById('mapping-container');
-        const mappingList = document.getElementById('mapping-list');
+        // 核心：全自动侦测逻辑
+        const autoDetectConfig = async () => {
+            try {
+                const response = await fetch('/api/read?path=' + encodeURIComponent(SETTINGS_PATH));
+                if (!response.ok) throw new Error('settings.ini 无法访问');
+                const content = await response.text();
 
-        let currentMapping = []; // 当前解析出的机场列表
+                // 提取 bin_name
+                const binMatch = content.match(/^bin_name="([^"]+)"/m);
+                const binName = binMatch ? binMatch[1] : 'Unknown';
+                document.getElementById('detected-core').innerText = binName;
 
-        // 处理配置选择变更
-        configSelector.onchange = () => {
-            if (configSelector.value === 'custom') {
-                customConfigInput.style.display = 'block';
-            } else {
-                customConfigInput.style.display = 'none';
-                if (configSelector.value) parseConfigFile(configSelector.value);
+                // 准备变量替换
+                const boxDirMatch = content.match(/^box_dir="([^"]+)"/m);
+                const boxDir = boxDirMatch ? boxDirMatch[1] : '/data/adb/box';
+
+                // 提取对应核心的配置文件
+                let confKey = '';
+                if (binName === 'mihomo') confKey = 'mihomo_config';
+                else if (binName === 'sing-box') confKey = 'sing_config';
+                else if (binName === 'xray') confKey = 'xray_config';
+                else if (binName === 'v2fly') confKey = 'v2fly_config';
+                else if (binName === 'hysteria') confKey = 'hysteria_config';
+
+                if (confKey) {
+                    const confMatch = content.match(new RegExp(`^${confKey}="([^"]+)"`, 'm'));
+                    if (confMatch) {
+                        // 展开变量: ${box_dir} -> /data/adb/box
+                        detectedMainConf = confMatch[1].replace('${box_dir}', boxDir);
+                        document.getElementById('detected-conf-path').innerText = detectedMainConf;
+                        
+                        // 自动触发解析
+                        parseConfigFile(detectedMainConf);
+                    }
+                }
+            } catch (e) {
+                console.error(e);
+                document.getElementById('detected-core').innerText = '未找到 Box';
             }
-        };
-
-        customConfigInput.onblur = () => {
-            if (customConfigInput.value) parseConfigFile(customConfigInput.value);
         };
 
         // 核心解析函数：智能识别内核并提取订阅
         const parseConfigFile = async (path) => {
             try {
                 const response = await fetch('/api/read?path=' + encodeURIComponent(path));
-                if (!response.ok) throw new Error('文件不可读');
+                if (!response.ok) throw new Error('关联的配置文件不可读');
                 const content = await response.text();
                 
                 let providers = [];
-                let type = '';
+                let type = path.endsWith('.json') ? 'sing-box' : 'mihomo';
 
-                // 简单的格式判断逻辑
-                if (content.trim().startsWith('{')) {
-                    // Sing-box JSON 模式
-                    type = 'sing-box';
-                    const json = JSON.parse(content);
-                    if (json.providers) {
-                        providers = json.providers.map(p => ({ tag: p.tag, path: p.path }));
-                    }
-                } else {
-                    // Mihomo YAML 模式 (正则提取以防环境无标准解析器)
-                    type = 'mihomo';
+                if (type === 'sing-box') {
+                    try {
+                        const json = JSON.parse(content);
+                        if (json.providers) providers = json.providers.map(p => ({ tag: p.tag, path: p.path }));
+                    } catch(e) { type = 'mihomo'; } // 容错处理
+                }
+                
+                if (type === 'mihomo') {
                     const regex = /^\s*([^:\s]+):\s*(?:[\s\S]*?)path:\s*(['"]?)(.+?)\2/gm;
                     let match;
-                    // 在 proxy-providers 段落中寻找
                     const section = content.split('proxy-providers:')[1];
                     if (section) {
                         while ((match = regex.exec(section)) !== null) {
@@ -308,14 +312,10 @@
                 }
 
                 if (providers.length > 0) {
-                    currentMapping = providers;
                     renderMappingList(providers, type);
-                } else {
-                    alert('未在配置文件中发现 remote 类型的订阅项目');
                 }
             } catch (e) {
                 console.error(e);
-                alert('解析失败：' + e.message);
             }
         };
 
@@ -325,7 +325,7 @@
             mappingList.innerHTML = list.map(item => `
                 <div class="mapping-item">
                     <div>
-                        <div class="mapping-tag">${item.tag} <small style="color:#3b82f6">[${type}]</small></div>
+                        <div class="mapping-tag">${item.tag} <small style="color:#10b981">[${type}]</small></div>
                         <div class="mapping-path">${item.path}</div>
                     </div>
                     <div class="checkbox-container">
@@ -335,7 +335,29 @@
             `).join('');
         };
 
-        const getBoxInfo = async () => { /* ... 保持原样 ... */
+        window.onload = () => {
+            getBoxInfo();
+            checkBoxStatus();
+            refreshLogs();
+            loadSavedConfig();
+            autoDetectConfig(); // 全自动开启
+        };
+
+        // 加载已保存的配置
+        const loadSavedConfig = async () => {
+            try {
+                const response = await fetch('/api/read?path=' + encodeURIComponent(CONF_PATH));
+                if (response.ok) {
+                    const text = await response.text();
+                    const intervalMatch = text.match(/INTERVAL=(\d+)/);
+                    if (intervalMatch) intervalInput.value = intervalMatch[1];
+                    
+                    // 恢复已勾选状态 (后续可增加持久化勾选记忆)
+                }
+            } catch (e) {}
+        };
+
+        const getBoxInfo = async () => {
             try {
                 const verCmd = "grep '^version=' /data/adb/modules/box_for_root/module.prop | cut -d= -f2";
                 const verResp = await fetch('/api/exec?cmd=' + encodeURIComponent(verCmd));
@@ -379,27 +401,6 @@
             return false;
         };
 
-        const getFileMtime = async () => { /* 占位，脚本将接管更高级的监控 */ };
-
-        window.onload = () => {
-            getBoxInfo();
-            checkBoxStatus();
-            refreshLogs();
-            loadSavedConfig();
-        };
-
-        // 加载已保存的配置
-        const loadSavedConfig = async () => {
-            try {
-                const response = await fetch('/api/read?path=' + encodeURIComponent(CONF_PATH));
-                if (response.ok) {
-                    const text = await response.text();
-                    const intervalMatch = text.match(/INTERVAL=(\d+)/);
-                    if (intervalMatch) intervalInput.value = intervalMatch[1];
-                }
-            } catch (e) {}
-        };
-
         document.getElementById('update-btn').onclick = async () => {
             const isRunning = await checkBoxStatus();
             if (!isRunning) return alert('Box 未开启！');
@@ -407,26 +408,26 @@
             alert('指令已发出。');
         };
 
+        const getFileMtime = async () => { };
+
         // 保存逻辑：构建映射字符串
         document.getElementById('save-btn').onclick = async () => {
             const val = parseInt(intervalInput.value);
-            const mainPath = configSelector.value === 'custom' ? customConfigInput.value : configSelector.value;
-            
-            if (!mainPath) return alert('请先选择或输入主配置文件路径');
+            if (!detectedMainConf) return alert('未侦测到有效的 Box 主配置路径，请检查 Box 是否安装正确。');
             
             const checks = document.querySelectorAll('.sub-check:checked');
             const mapStr = Array.from(checks).map(c => `${c.dataset.tag}|${c.dataset.path}`).join(';');
             
-            if (!mapStr) return alert('请至少勾选一个需要守护的机场项目');
+            if (!mapStr) return alert('请选择至少一个需要自动更新的项目。');
 
-            const coreType = mainPath.endsWith('.json') ? 'sing-box' : 'mihomo';
-            const content = `INTERVAL=${val}\nCORE_TYPE="${coreType}"\nMAIN_CONF="${mainPath}"\nWATCH_MAP="${mapStr}"`;
+            const coreType = detectedMainConf.endsWith('.json') ? 'sing-box' : 'mihomo';
+            const content = `INTERVAL=${val}\nCORE_TYPE="${coreType}"\nMAIN_CONF="${detectedMainConf}"\nWATCH_MAP="${mapStr}"`;
 
             try {
                 await fetch('/api/write?path=' + encodeURIComponent(CONF_PATH) + '&data=' + encodeURIComponent(content));
-                alert('配置与映射已成功保存！更新器将开始对所选项目进行精准守护。');
+                alert('智能监控已激活！更新器将精准守护您选择的项目。');
             } catch (e) {
-                alert('保存失败，请检查管理权限。');
+                alert('保存失败。');
             }
         };
 
@@ -442,6 +443,7 @@
         setInterval(getBoxInfo, 10000);
         setInterval(checkBoxStatus, 5000);
         setInterval(refreshLogs, 3000);
+    </script>
     </script>
 </body>
 </html>
