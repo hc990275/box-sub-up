@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Box-sub-up v2.0 — 基于 Clash API 的订阅自动更新守护进程
+# Box-sub-up v2.0.1 — 基于 Clash API 的订阅自动更新守护进程
 # 开启了详细的 Debug 日志记录模式：/storage/emulated/0/Android/sub_debug.log
 
 MODDIR=${0%/*}
