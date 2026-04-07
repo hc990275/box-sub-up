@@ -131,6 +131,40 @@
             margin-right: 6px;
             box-shadow: 0 0 8px #10b981;
         }
+
+        /* 新增映射列表样式 */
+        .mapping-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 10px 14px;
+            border-radius: 10px;
+            margin-bottom: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .mapping-tag { font-size: 0.85rem; color: #fff; }
+        .mapping-path { font-size: 0.7rem; color: #64748b; margin-top: 2px; }
+        .checkbox-container {
+            width: 20px;
+            height: 20px;
+            position: relative;
+        }
+        input[type="checkbox"] {
+            cursor: pointer;
+            width: 18px;
+            height: 18px;
+        }
+        select {
+            width: 100%;
+            padding: 10px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid #334155;
+            color: #fff;
+            border-radius: 8px;
+            outline: none;
+            margin-bottom: 12px;
+        }
     </style>
 </head>
 <body>
@@ -160,6 +194,20 @@
         </div>
 
         <div class="card">
+            <div class="label" style="margin-bottom: 12px;">配置文件关联</div>
+            <select id="config-selector">
+                <option value="">-- 请选择主配置文件 --</option>
+                <option value="/data/adb/box/sing-box/config.json">/data/adb/box/sing-box/config.json</option>
+                <option value="/data/adb/box/mihomo/config.yaml">/data/adb/box/mihomo/config.yaml</option>
+                <option value="custom">手动输入自定义路径...</option>
+            </select>
+            <input type="text" id="custom-config-path" placeholder="请输入完整路径..." style="display:none; width:100%; padding:10px; background:rgba(0,0,0,0.3); border:1px solid #334155; color:#fff; border-radius:8px; margin-bottom:12px; outline:none;">
+            
+            <div id="mapping-container" style="max-height: 200px; overflow-y: auto; margin-bottom: 15px; display: none;">
+                <div class="label" style="font-size: 0.75rem; margin-bottom: 8px;">发现订阅项目 (请勾选需要守护的项目)</div>
+                <div id="mapping-list"></div>
+            </div>
+
             <div class="label-group">
                 <span class="label">更新周期</span>
                 <div style="display: flex; align-items: center;">
@@ -167,7 +215,7 @@
                     <span class="value" style="margin-left: 10px; font-size: 1rem; color: #94a3b8;">min</span>
                 </div>
             </div>
-            <button id="save-btn" style="margin-top: 15px;">保存配置</button>
+            <button id="save-btn" style="margin-top: 15px;">保存配置并启动映射</button>
         </div>
 
         <div class="card">
@@ -189,13 +237,12 @@
     </div>
 
     <script>
-        // Magisk WebUI 通信路径 (适配标准路径)
+        // Magisk WebUI 通信路径
         const MOD_DIR = window.location.pathname.split('webui')[0];
         const CONF_PATH = '/storage/emulated/0/Android/sub_config.conf';
         const LOG_PATH = '/storage/emulated/0/Android/sub.log';
-        const BOX_CONF_PATH = '/data/adb/box/sing-box/config.json';
 
-        // 初始化
+        // 基础显示控件
         const intervalInput = document.getElementById('interval-num');
         const logBox = document.getElementById('log-box');
         const boxStatusDisp = document.getElementById('box-status');
@@ -204,21 +251,98 @@
         const boxNetDisp = document.getElementById('box-net');
         const boxProxyDisp = document.getElementById('box-proxy');
         const boxPidDisp = document.getElementById('box-pid');
-
         const boxVersionDisp = document.getElementById('box-version');
 
-        // 获取 Box 详细配置信息
-        const getBoxInfo = async () => {
+        // 新增配置映射控件
+        const configSelector = document.getElementById('config-selector');
+        const customConfigInput = document.getElementById('custom-config-path');
+        const mappingContainer = document.getElementById('mapping-container');
+        const mappingList = document.getElementById('mapping-list');
+
+        let currentMapping = []; // 当前解析出的机场列表
+
+        // 处理配置选择变更
+        configSelector.onchange = () => {
+            if (configSelector.value === 'custom') {
+                customConfigInput.style.display = 'block';
+            } else {
+                customConfigInput.style.display = 'none';
+                if (configSelector.value) parseConfigFile(configSelector.value);
+            }
+        };
+
+        customConfigInput.onblur = () => {
+            if (customConfigInput.value) parseConfigFile(customConfigInput.value);
+        };
+
+        // 核心解析函数：智能识别内核并提取订阅
+        const parseConfigFile = async (path) => {
             try {
-                // 1. 获取 Box 版本 (从模块安装目录读取)
+                const response = await fetch('/api/read?path=' + encodeURIComponent(path));
+                if (!response.ok) throw new Error('文件不可读');
+                const content = await response.text();
+                
+                let providers = [];
+                let type = '';
+
+                // 简单的格式判断逻辑
+                if (content.trim().startsWith('{')) {
+                    // Sing-box JSON 模式
+                    type = 'sing-box';
+                    const json = JSON.parse(content);
+                    if (json.providers) {
+                        providers = json.providers.map(p => ({ tag: p.tag, path: p.path }));
+                    }
+                } else {
+                    // Mihomo YAML 模式 (正则提取以防环境无标准解析器)
+                    type = 'mihomo';
+                    const regex = /^\s*([^:\s]+):\s*(?:[\s\S]*?)path:\s*(['"]?)(.+?)\2/gm;
+                    let match;
+                    // 在 proxy-providers 段落中寻找
+                    const section = content.split('proxy-providers:')[1];
+                    if (section) {
+                        while ((match = regex.exec(section)) !== null) {
+                            providers.push({ tag: match[1], path: match[3] });
+                        }
+                    }
+                }
+
+                if (providers.length > 0) {
+                    currentMapping = providers;
+                    renderMappingList(providers, type);
+                } else {
+                    alert('未在配置文件中发现 remote 类型的订阅项目');
+                }
+            } catch (e) {
+                console.error(e);
+                alert('解析失败：' + e.message);
+            }
+        };
+
+        // 渲染勾选列表
+        const renderMappingList = (list, type) => {
+            mappingContainer.style.display = 'block';
+            mappingList.innerHTML = list.map(item => `
+                <div class="mapping-item">
+                    <div>
+                        <div class="mapping-tag">${item.tag} <small style="color:#3b82f6">[${type}]</small></div>
+                        <div class="mapping-path">${item.path}</div>
+                    </div>
+                    <div class="checkbox-container">
+                        <input type="checkbox" class="sub-check" data-tag="${item.tag}" data-path="${item.path}" checked>
+                    </div>
+                </div>
+            `).join('');
+        };
+
+        const getBoxInfo = async () => { /* ... 保持原样 ... */
+            try {
                 const verCmd = "grep '^version=' /data/adb/modules/box_for_root/module.prop | cut -d= -f2";
                 const verResp = await fetch('/api/exec?cmd=' + encodeURIComponent(verCmd));
                 if (verResp.ok) {
                     const ver = await verResp.text();
                     boxVersionDisp.innerText = 'Box for Root v' + (ver.trim() || 'Custom');
                 }
-
-                // 2. 提取 bin_name, network_mode, proxy_mode
                 const cmd = "grep -E '^(bin_name|network_mode|proxy_mode)=' /data/adb/box/box/settings.ini | tr -d '\"'";
                 const response = await fetch('/api/exec?cmd=' + encodeURIComponent(cmd));
                 if (response.ok) {
@@ -228,22 +352,16 @@
                         const [key, val] = line.split('=');
                         if (key) info[key.trim()] = val.trim();
                     });
-                    
                     if (info.bin_name) boxBinDisp.innerText = info.bin_name;
                     if (info.network_mode) boxNetDisp.innerText = info.network_mode.toUpperCase();
                     if (info.proxy_mode) boxProxyDisp.innerText = info.proxy_mode;
                 }
-
-                // 获取 PID
                 const pidResp = await fetch('/api/exec?cmd=' + encodeURIComponent('pidof box'));
                 const pid = await pidResp.text();
                 boxPidDisp.innerText = pid.trim() || '未运行';
-            } catch (e) {
-                console.error('获取 Box 信息失败', e);
-            }
+            } catch (e) {}
         };
 
-        // 检测 Box 运行状态
         const checkBoxStatus = async () => {
             try {
                 const response = await fetch('/api/exec?cmd=' + encodeURIComponent('pidof box'));
@@ -253,93 +371,77 @@
                         boxStatusDisp.innerHTML = '<span class="status-dot" style="background: #10b981; box-shadow: 0 0 8px #10b981;"></span>Box 已开启';
                         boxStatusDisp.style.color = '#10b981';
                         return true;
-                    } else {
-                        boxStatusDisp.innerHTML = '<span class="status-dot" style="background: #ef4444; box-shadow: 0 0 8px #ef4444;"></span>Box 未开启';
-                        boxStatusDisp.style.color = '#ef4444';
-                        return false;
                     }
                 }
-            } catch (e) {
-                console.error('状态检测失败', e);
-            }
+            } catch (e) {}
+            boxStatusDisp.innerHTML = '<span class="status-dot" style="background: #ef4444; box-shadow: 0 0 8px #ef4444;"></span>Box 未开启';
+            boxStatusDisp.style.color = '#ef4444';
             return false;
         };
 
-        // 获取文件修改时间
-        const getFileMtime = async () => {
-            try {
-                const response = await fetch('/api/exec?cmd=' + encodeURIComponent(`date -r ${BOX_CONF_PATH} "+%Y-%m-%d %H:%M:%S"`));
-                if (response.ok) {
-                    const mtime = await response.text();
-                    mtimeDisp.innerText = mtime.trim() || '文件未找到';
-                }
-            } catch (e) {
-                mtimeDisp.innerText = '获取失败';
-            }
-        };
+        const getFileMtime = async () => { /* 占位，脚本将接管更高级的监控 */ };
 
-        // 页面加载瞬间进行检测
         window.onload = () => {
             getBoxInfo();
             checkBoxStatus();
-            getFileMtime();
             refreshLogs();
+            loadSavedConfig();
         };
 
-        setInterval(getBoxInfo, 10000);
-        setInterval(checkBoxStatus, 5000);
-        setInterval(getFileMtime, 10000);
+        // 加载已保存的配置
+        const loadSavedConfig = async () => {
+            try {
+                const response = await fetch('/api/read?path=' + encodeURIComponent(CONF_PATH));
+                if (response.ok) {
+                    const text = await response.text();
+                    const intervalMatch = text.match(/INTERVAL=(\d+)/);
+                    if (intervalMatch) intervalInput.value = intervalMatch[1];
+                }
+            } catch (e) {}
+        };
 
-        // 手动更新前先检测 Box
         document.getElementById('update-btn').onclick = async () => {
             const isRunning = await checkBoxStatus();
-            if (!isRunning) {
-                alert('Box 未开启，无法执行更新！');
-                return;
-            }
-            try {
-                // 触发模块 action.sh 或脚本更新逻辑
-                await fetch('/api/exec?cmd=' + encodeURIComponent(`${MOD_DIR}singbox_sub_update.sh &`));
-                alert('更新指令已发出，请观察日志或文件时间。');
-            } catch (e) {
-                alert('指令发送失败');
-            }
+            if (!isRunning) return alert('Box 未开启！');
+            await fetch('/api/exec?cmd=' + encodeURIComponent(`${MOD_DIR}singbox_sub_update.sh &`));
+            alert('指令已发出。');
         };
 
-        // 保存逻辑
+        // 保存逻辑：构建映射字符串
         document.getElementById('save-btn').onclick = async () => {
             const val = parseInt(intervalInput.value);
-            if (isNaN(val) || val < 1) {
-                alert('请输入有效的分钟数（最小1分钟）');
-                return;
-            }
-            const content = `INTERVAL=${val}`;
-            // 注意：WebUI 读写文件依赖管理器提供的原生 API 转发
-            // 这里使用 KSUDocs 推荐的 fetch 方式或预设 API
+            const mainPath = configSelector.value === 'custom' ? customConfigInput.value : configSelector.value;
+            
+            if (!mainPath) return alert('请先选择或输入主配置文件路径');
+            
+            const checks = document.querySelectorAll('.sub-check:checked');
+            const mapStr = Array.from(checks).map(c => `${c.dataset.tag}|${c.dataset.path}`).join(';');
+            
+            if (!mapStr) return alert('请至少勾选一个需要守护的机场项目');
+
+            const coreType = mainPath.endsWith('.json') ? 'sing-box' : 'mihomo';
+            const content = `INTERVAL=${val}\nCORE_TYPE="${coreType}"\nMAIN_CONF="${mainPath}"\nWATCH_MAP="${mapStr}"`;
+
             try {
-                const response = await fetch('/api/write?path=' + encodeURIComponent(CONF_PATH) + '&data=' + encodeURIComponent(content));
-                alert('配置已更新为 ' + val + ' 分钟！');
+                await fetch('/api/write?path=' + encodeURIComponent(CONF_PATH) + '&data=' + encodeURIComponent(content));
+                alert('配置与映射已成功保存！更新器将开始对所选项目进行精准守护。');
             } catch (e) {
-                // 如果是常规浏览器预览，提示手动操作
-                console.error(e);
-                alert('环境检测：请在手机管理器中运行以提交修改');
+                alert('保存失败，请检查管理权限。');
             }
         };
 
-        // 刷新日志
         const refreshLogs = async () => {
             try {
                 const response = await fetch('/api/read?path=' + encodeURIComponent(LOG_PATH));
                 const text = await response.text();
                 logBox.innerHTML = text.split('\n').map(line => `<div class="log-line">${line}</div>`).join('');
                 logBox.scrollTop = logBox.scrollHeight;
-            } catch (e) {
-                logBox.innerHTML = '<div class="log-line">无法获取日志，请检查权限。</div>';
-            }
+            } catch (e) {}
         };
 
+        setInterval(getBoxInfo, 10000);
+        setInterval(checkBoxStatus, 5000);
         setInterval(refreshLogs, 3000);
-        refreshLogs();
     </script>
 </body>
 </html>

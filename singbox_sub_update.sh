@@ -30,62 +30,74 @@ while true; do
         source "$CONF_FILE"
     else
         INTERVAL=$DEFAULT_INTERVAL
+        CORE_TYPE=""
     fi
 
-    # 强制预检：每次自动更新前必须检测 Box 状态
     CURRENT_TIME=$(date "+%m-%d %H:%M:%S")
-    CHECK_FILE="/data/adb/box/sing-box/config.json"
-    
+
+    # 基础运行预检
     if ! check_box_running; then
-        SUMMARY_LOG="[$CURRENT_TIME] Box未运行，跳过当次更新。"
-        if [ -f "$LOG_FILE" ]; then
-            echo "$SUMMARY_LOG" | cat - "$LOG_FILE" | head -n 10 > "${LOG_FILE}.tmp"
-            mv "${LOG_FILE}.tmp" "$LOG_FILE"
-        else
-            echo "$SUMMARY_LOG" > "$LOG_FILE"
-        fi
-        # 按分钟周期进入下一次等待
+        SUMMARY_LOG="[$CURRENT_TIME] Box未运行，跳过更新。"
+        [ -f "$LOG_FILE" ] && echo "$SUMMARY_LOG" | cat - "$LOG_FILE" | head -n 15 > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE" || echo "$SUMMARY_LOG" > "$LOG_FILE"
         sleep $((INTERVAL * 60))
         continue
     fi
 
-    # 获取更新前的修改时间
-    PRE_MTIME=0
-    [ -f "$CHECK_FILE" ] && PRE_MTIME=$(stat -c %Y "$CHECK_FILE")
+    # 映射有效性预检
+    if [ -z "$WATCH_MAP" ] || [ -z "$MAIN_CONF" ]; then
+        SUMMARY_LOG="[$CURRENT_TIME] 未配置机场映射，请前往 WebUI 设置。"
+        [ -f "$LOG_FILE" ] && echo "$SUMMARY_LOG" | cat - "$LOG_FILE" | head -n 15 > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE" || echo "$SUMMARY_LOG" > "$LOG_FILE"
+        sleep $((INTERVAL * 60))
+        continue
+    fi
 
-    # 精准提取机场名
-    PROVIDERS=$(curl -s "$API/providers/proxies" | sed 's/"name":"/\n/g' | grep '","proxies"' | awk -F'"' '{print $1}' | grep -v 'default')
-    
-    if [ -n "$PROVIDERS" ]; then
-        SUMMARY_LOG="[$CURRENT_TIME]"
+    # 获取配置文件的基准目录 (用于处理相对路径 ./)
+    CONF_BASE=$(dirname "$MAIN_CONF")
+    SUMMARY_LOG="[$CURRENT_TIME]"
+
+    # 解析映射并执行精准更新
+    # 映射格式: tag1|path1;tag2|path2
+    IFS=';'
+    for pair in $WATCH_MAP; do
+        TAG=$(echo "$pair" | cut -d'|' -f1)
+        REL_PATH=$(echo "$pair" | cut -d'|' -f2)
         
-        for p in $PROVIDERS; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$API/providers/proxies/$p" -d "" --max-time 30)
-            
-            # 后置校验：给系统 1 秒同步并获取新时间戳
-            sleep 1
-            POST_MTIME=0
-            [ -f "$CHECK_FILE" ] && POST_MTIME=$(stat -c %Y "$CHECK_FILE")
-            
-            if { [ "$STATUS" = "204" ] || [ "$STATUS" = "200" ]; } && [ "$POST_MTIME" -gt "$PRE_MTIME" ]; then
-                SUMMARY_LOG="$SUMMARY_LOG $p:更新成功"
-                PRE_MTIME=$POST_MTIME
-            else
-                RESULT="失败($STATUS)"
-                [ "$POST_MTIME" -le "$PRE_MTIME" ] && RESULT="配置未刷新"
-                SUMMARY_LOG="$SUMMARY_LOG $p:$RESULT"
-            fi
-        done
-        
-        # 保持日志文件较小（10行）
-        if [ -f "$LOG_FILE" ]; then
-            echo "$SUMMARY_LOG" | cat - "$LOG_FILE" | head -n 10 > "${LOG_FILE}.tmp"
-            mv "${LOG_FILE}.tmp" "$LOG_FILE"
+        # 处理相对路径转换为绝对路径
+        if [[ "$REL_PATH" == ./* ]]; then
+            ABS_PATH="$CONF_BASE/${REL_PATH#./}"
         else
-            echo "$SUMMARY_LOG" > "$LOG_FILE"
+            ABS_PATH="$REL_PATH"
         fi
+
+        # 记录更新前时间戳
+        PRE_MTIME=0
+        [ -f "$ABS_PATH" ] && PRE_MTIME=$(stat -c %Y "$ABS_PATH")
+
+        # 触发 API 更新 (使用 TAG 作为标识)
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$API/providers/proxies/$TAG" -d "" --max-time 30)
+        
+        # 等待同步并检查
+        sleep 1.5
+        POST_MTIME=0
+        [ -f "$ABS_PATH" ] && POST_MTIME=$(stat -c %Y "$ABS_PATH")
+
+        if { [ "$STATUS" = "204" ] || [ "$STATUS" = "200" ]; } && [ "$POST_MTIME" -gt "$PRE_MTIME" ]; then
+            SUMMARY_LOG="$SUMMARY_LOG $TAG:成功"
+        else
+            RESULT="失败($STATUS)"
+            [ "$POST_MTIME" -le "$PRE_MTIME" ] && RESULT="文件未刷新"
+            SUMMARY_LOG="$SUMMARY_LOG $TAG:$RESULT"
+        fi
+    done
+    unset IFS
+
+    # 写入日志
+    if [ -f "$LOG_FILE" ]; then
+        echo "$SUMMARY_LOG" | cat - "$LOG_FILE" | head -n 15 > "${LOG_FILE}.tmp"
+        mv "${LOG_FILE}.tmp" "$LOG_FILE"
+    else
+        echo "$SUMMARY_LOG" > "$LOG_FILE"
     fi
     
-    # 按分钟单位 sleep
     sleep $((INTERVAL * 60))
 done
