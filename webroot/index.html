@@ -244,7 +244,7 @@
         const CONF_PATH = '/storage/emulated/0/Android/sub_config.conf';
         const LOG_PATH = '/storage/emulated/0/Android/sub.log';
 
-        const SETTINGS_PATH = '/data/adb/box/box/settings.ini';
+        const SETTINGS_PATH = '/data/adb/box/settings.ini';
         let detectedMainConf = '';
 
         // 核心：全自动侦测逻辑
@@ -301,17 +301,24 @@
                 if (type === 'sing-box') {
                     try {
                         const json = JSON.parse(content);
-                        if (json.providers) providers = json.providers.map(p => ({ tag: p.tag, path: p.path }));
-                    } catch(e) { type = 'mihomo'; } // 容错处理
+                        // sing-box 1.11+ outbound_providers 或传统 providers
+                        const provArr = json.outbound_providers || json.providers || [];
+                        providers = provArr
+                            .filter(p => p.tag && p.path)
+                            .map(p => ({ tag: p.tag, path: p.path }));
+                    } catch(e) { type = 'mihomo'; } // 容错：JSON 解析失败则尝试 YAML
                 }
                 
                 if (type === 'mihomo') {
-                    const regex = /^\s*([^:\s]+):\s*(?:[\s\S]*?)path:\s*(['"]?)(.+?)\2/gm;
-                    let match;
-                    const section = content.split('proxy-providers:')[1];
-                    if (section) {
-                        while ((match = regex.exec(section)) !== null) {
-                            providers.push({ tag: match[1], path: match[3] });
+                    // 提取 proxy-providers: 段落（到下一个顶级 key 或文件末尾）
+                    const sectionMatch = content.match(/^proxy-providers:\s*\n([\s\S]*?)(?=^\S|$)/m);
+                    if (sectionMatch) {
+                        const section = sectionMatch[1];
+                        // 匹配每个 provider 块：顶级缩进的 tag + 其 path 字段
+                        const providerRegex = /^  (\S+):[\s\S]*?path:\s*['"]?([^'"\n]+)['"]?/gm;
+                        let match;
+                        while ((match = providerRegex.exec(section)) !== null) {
+                            providers.push({ tag: match[1], path: match[2].trim() });
                         }
                     }
                 }
@@ -339,6 +346,18 @@
                 </div>
             `).join('');
         };
+
+        // DOM 元素引用
+        const mappingContainer = document.getElementById('mapping-container');
+        const mappingList = document.getElementById('mapping-list');
+        const intervalInput = document.getElementById('interval-num');
+        const logBox = document.getElementById('log-box');
+        const boxVersionDisp = document.getElementById('box-version');
+        const boxBinDisp = document.getElementById('box-bin');
+        const boxNetDisp = document.getElementById('box-net');
+        const boxProxyDisp = document.getElementById('box-proxy');
+        const boxPidDisp = document.getElementById('box-pid');
+        const boxStatusDisp = document.getElementById('box-status');
 
         window.onload = () => {
             getBoxInfo();
@@ -370,7 +389,7 @@
                     const ver = await verResp.text();
                     boxVersionDisp.innerText = 'Box for Root v' + (ver.trim() || 'Custom');
                 }
-                const cmd = "grep -E '^(bin_name|network_mode|proxy_mode)=' /data/adb/box/box/settings.ini | tr -d '\"'";
+                const cmd = "grep -E '^(bin_name|network_mode|proxy_mode)=' /data/adb/box/settings.ini | tr -d '\"'";
                 const response = await fetch('/api/exec?cmd=' + encodeURIComponent(cmd));
                 if (response.ok) {
                     const text = await response.text();
@@ -498,7 +517,6 @@
         setInterval(getBoxInfo, 10000);
         setInterval(checkBoxStatus, 5000);
         setInterval(refreshLogs, 3000);
-    </script>
     </script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 # Box-sub-up
 
-这是一个专为 **Box for Root** (Magisk/KernelSU 模块) 打造的订阅自动更新扩展工具。它能够智能识别您的 Box 配置，并根据您的选择，精准、定时地自动刷新订阅内容。
+这是一个专为 **Box for Root** (Magisk/KernelSU/APatch 模块) 打造的订阅自动更新扩展工具。它能够智能识别您的 Box 配置，并根据您的选择，精准、定时地自动刷新订阅内容。
 
 ## 🚀 核心功能
 
@@ -22,3 +22,27 @@
    - 调用 Clash API 触发 `PUT` 更新。
    - 等待同步后，再次校验时间戳，确保订阅已真实写入硬盘。
 5. **反馈阶段**：将更新结果记录至 `/sdcard/Android/sub.log`，并推送到 WebUI 可视化面板。
+
+## 📦 安装说明
+
+1. 确保已安装 **Box for Root** 模块并正常运行
+2. 在 Magisk/KernelSU/APatch 中刷入本模块的 zip 包
+3. 重启设备
+4. 在面具模块列表中点击本模块的"设置"图标进入 WebUI
+5. 选择需要监视的订阅项目，设置更新间隔，点击"保存配置并启动监控"
+
+## 📋 版本日志
+
+### v1.6.0 (2026-04-07)
+- **fix**: 添加 `META-INF` + `customize.sh` 标准 Magisk 安装架构，修复面具无法显示更新按钮的问题
+- **fix**: 修复 WebUI 中 `settings.ini` 路径错误（`/data/adb/box/box/` → `/data/adb/box/`），解决无法获取机场映射的问题
+- **fix**: 修复 mihomo `proxy-providers` YAML 解析正则，正确提取标准格式的订阅项
+- **fix**: 修复 `sub_config.conf` 默认间隔从 1800 分钟改为 30 分钟
+- **fix**: 增加 sing-box `outbound_providers` 兼容解析
+- **fix**: 添加 DOM 元素引用声明，解决潜在的 JS 变量未定义问题
+- **fix**: 清理 HTML 中多余的 `</script>` 标签
+
+### v1.5.2 (2026-04-07)
+- **feat**: 初始版本，支持 WebUI 可视化配置
+- **feat**: 智能侦测 Box 核心与配置文件
+- **feat**: 支持 mihomo/sing-box 双内核解析
