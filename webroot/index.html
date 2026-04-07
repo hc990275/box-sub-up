@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sing-box 订阅更新器</title>
+    <title>Box 订阅更新器</title>
     <style>
         :root {
             --bg: #0f172a;
@@ -132,7 +132,6 @@
             box-shadow: 0 0 8px #10b981;
         }
 
-        /* 新增映射列表样式 */
         .mapping-item {
             display: flex;
             align-items: center;
@@ -239,31 +238,68 @@
     </div>
 
     <script>
-        // Magisk WebUI 通信路径
-        const MOD_DIR = window.location.pathname.split('webroot')[0];
+        // ═══════════════════════════════════════
+        // 统一 API 抽象层：自动兼容 KernelSU / Magisk / APatch
+        // ═══════════════════════════════════════
+
+        const isKsu = () => !!(window.ksu && typeof window.ksu.exec === 'function');
+
+        const shellExec = async (cmd) => {
+            if (isKsu()) {
+                const result = await window.ksu.exec(cmd);
+                return (result && result.stdout) ? result.stdout : '';
+            }
+            const resp = await fetch('/api/exec?cmd=' + encodeURIComponent(cmd));
+            return resp.ok ? await resp.text() : '';
+        };
+
+        const readFile = async (path) => {
+            return await shellExec('cat "' + path + '" 2>/dev/null');
+        };
+
+        const writeFile = async (path, content) => {
+            const escaped = content.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            await shellExec('mkdir -p "$(dirname \'' + path + '\')" && printf "' + escaped + '\\n" > "' + path + '"');
+        };
+
+        // ═══════════════════════════════════════
+        // 常量与路径
+        // ═══════════════════════════════════════
         const CONF_PATH = '/storage/emulated/0/Android/sub_config.conf';
         const LOG_PATH = '/storage/emulated/0/Android/sub.log';
-
         const SETTINGS_PATH = '/data/adb/box/settings.ini';
         let detectedMainConf = '';
 
+        // ═══════════════════════════════════════
         // 核心：全自动侦测逻辑
+        // ═══════════════════════════════════════
         const autoDetectConfig = async () => {
             try {
-                const response = await fetch('/api/read?path=' + encodeURIComponent(SETTINGS_PATH));
-                if (!response.ok) throw new Error('settings.ini 无法访问');
-                const content = await response.text();
+                const content = await readFile(SETTINGS_PATH);
+                if (!content || content.trim().length === 0) throw new Error('settings.ini 为空');
 
-                // 提取 bin_name
                 const binMatch = content.match(/^bin_name="([^"]+)"/m);
                 const binName = binMatch ? binMatch[1] : 'Unknown';
                 document.getElementById('detected-core').innerText = binName;
 
-                // 准备变量替换
-                const boxDirMatch = content.match(/^box_dir="([^"]+)"/m);
-                const boxDir = boxDirMatch ? boxDirMatch[1] : '/data/adb/box';
+                // 构建变量表，用于递归展开 shell 变量
+                const vars = {};
+                const varRegex = /^([a-zA-Z_][a-zA-Z0-9_]*)="([^"]*)"/gm;
+                let vm;
+                while ((vm = varRegex.exec(content)) !== null) {
+                    vars[vm[1]] = vm[2];
+                }
 
-                // 提取对应核心的配置文件
+                // 递归展开 ${var} 引用 (解决 ${box_dir} 和 ${name_mihomo_config} 嵌套问题)
+                const expandVars = (str, depth) => {
+                    if (!depth) depth = 0;
+                    if (depth > 5) return str;
+                    return str.replace(/\$\{([^}]+)\}/g, function(m, varName) {
+                        var val = vars[varName];
+                        return val !== undefined ? expandVars(val, depth + 1) : m;
+                    });
+                };
+
                 let confKey = '';
                 if (binName === 'mihomo') confKey = 'mihomo_config';
                 else if (binName === 'sing-box') confKey = 'sing_config';
@@ -271,54 +307,67 @@
                 else if (binName === 'v2fly') confKey = 'v2fly_config';
                 else if (binName === 'hysteria') confKey = 'hysteria_config';
 
-                if (confKey) {
-                    const confMatch = content.match(new RegExp(`^${confKey}="([^"]+)"`, 'm'));
-                    if (confMatch) {
-                        // 展开变量: ${box_dir} -> /data/adb/box
-                        detectedMainConf = confMatch[1].replace('${box_dir}', boxDir);
-                        document.getElementById('detected-conf-path').innerText = detectedMainConf;
-                        
-                        // 自动触发解析
-                        parseConfigFile(detectedMainConf);
-                    }
+                if (confKey && vars[confKey]) {
+                    detectedMainConf = expandVars(vars[confKey]);
+                    document.getElementById('detected-conf-path').innerText = detectedMainConf;
+                    parseConfigFile(detectedMainConf);
                 }
             } catch (e) {
-                console.error(e);
+                console.error('autoDetectConfig:', e);
                 document.getElementById('detected-core').innerText = '未找到 Box';
             }
         };
 
-        // 核心解析函数：智能识别内核并提取订阅
+        // ═══════════════════════════════════════
+        // 解析配置文件，提取订阅 providers
+        // ═══════════════════════════════════════
         const parseConfigFile = async (path) => {
             try {
-                const response = await fetch('/api/read?path=' + encodeURIComponent(path));
-                if (!response.ok) throw new Error('关联的配置文件不可读');
-                const content = await response.text();
-                
-                let providers = [];
-                let type = path.endsWith('.json') ? 'sing-box' : 'mihomo';
+                const content = await readFile(path);
+                if (!content || content.trim().length === 0) return;
+
+                var providers = [];
+                var type = path.endsWith('.json') ? 'sing-box' : 'mihomo';
 
                 if (type === 'sing-box') {
                     try {
-                        const json = JSON.parse(content);
-                        // sing-box 1.11+ outbound_providers 或传统 providers
-                        const provArr = json.outbound_providers || json.providers || [];
-                        providers = provArr
-                            .filter(p => p.tag && p.path)
-                            .map(p => ({ tag: p.tag, path: p.path }));
-                    } catch(e) { type = 'mihomo'; } // 容错：JSON 解析失败则尝试 YAML
+                        var json = JSON.parse(content);
+                        var provArr = json.outbound_providers || json.providers || [];
+                        providers = provArr.filter(function(p) { return p.tag && p.path; }).map(function(p) { return { tag: p.tag, path: p.path }; });
+                    } catch(e) { type = 'mihomo'; }
                 }
-                
+
                 if (type === 'mihomo') {
-                    // 提取 proxy-providers: 段落（到下一个顶级 key 或文件末尾）
-                    const sectionMatch = content.match(/^proxy-providers:\s*\n([\s\S]*?)(?=^\S|$)/m);
-                    if (sectionMatch) {
-                        const section = sectionMatch[1];
-                        // 匹配每个 provider 块：顶级缩进的 tag + 其 path 字段
-                        const providerRegex = /^  (\S+):[\s\S]*?path:\s*['"]?([^'"\n]+)['"]?/gm;
-                        let match;
-                        while ((match = providerRegex.exec(section)) !== null) {
-                            providers.push({ tag: match[1], path: match[2].trim() });
+                    // 逐行状态机解析 proxy-providers
+                    var lines = content.split('\n');
+                    var inSection = false;
+                    var currentTag = '';
+
+                    for (var i = 0; i < lines.length; i++) {
+                        var line = lines[i];
+                        if (/^proxy-providers:\s*$/.test(line)) {
+                            inSection = true;
+                            continue;
+                        }
+                        if (inSection && /^\S/.test(line) && line.charAt(0) !== '#') {
+                            break;
+                        }
+                        if (!inSection) continue;
+
+                        // 匹配 provider tag (2空格缩进)
+                        var tagMatch = line.match(/^  ([a-zA-Z0-9_-]+):\s*$/);
+                        if (tagMatch) {
+                            currentTag = tagMatch[1];
+                            continue;
+                        }
+
+                        // 匹配 path 字段
+                        if (currentTag) {
+                            var pathMatch = line.match(/^\s+path:\s*['"]?([^'"#\n]+?)['"]?\s*$/);
+                            if (pathMatch) {
+                                providers.push({ tag: currentTag, path: pathMatch[1].trim() });
+                                currentTag = '';
+                            }
                         }
                     }
                 }
@@ -327,99 +376,87 @@
                     renderMappingList(providers, type);
                 }
             } catch (e) {
-                console.error(e);
+                console.error('parseConfigFile:', e);
             }
         };
 
-        // 渲染勾选列表
+        // ═══════════════════════════════════════
+        // 渲染映射勾选列表
+        // ═══════════════════════════════════════
         const renderMappingList = (list, type) => {
-            const container = document.getElementById('mapping-container');
-            const listEl = document.getElementById('mapping-list');
+            var container = document.getElementById('mapping-container');
+            var listEl = document.getElementById('mapping-list');
             if (!container || !listEl) return;
-            
+
             container.style.display = 'block';
-            listEl.innerHTML = list.map(item => `
-                <div class="mapping-item">
-                    <div>
-                        <div class="mapping-tag">${item.tag} <small style="color:#10b981">[${type}]</small></div>
-                        <div class="mapping-path">${item.path}</div>
-                    </div>
-                    <div class="checkbox-container">
-                        <input type="checkbox" class="sub-check" data-tag="${item.tag}" data-path="${item.path}" checked>
-                    </div>
-                </div>
-            `).join('');
+            listEl.innerHTML = list.map(function(item) {
+                return '<div class="mapping-item"><div><div class="mapping-tag">' + item.tag + ' <small style="color:#10b981">[' + type + ']</small></div><div class="mapping-path">' + item.path + '</div></div><div class="checkbox-container"><input type="checkbox" class="sub-check" data-tag="' + item.tag + '" data-path="' + item.path + '" checked></div></div>';
+            }).join('');
         };
 
-        // DOM 元素引用
-        const intervalInput = document.getElementById('interval-num');
-        const logBox = document.getElementById('log-box');
-        const boxVersionDisp = document.getElementById('box-version');
-        const boxBinDisp = document.getElementById('box-bin');
-        const boxNetDisp = document.getElementById('box-net');
-        const boxProxyDisp = document.getElementById('box-proxy');
-        const boxPidDisp = document.getElementById('box-pid');
-        const boxStatusDisp = document.getElementById('box-status');
+        // ═══════════════════════════════════════
+        // DOM 引用与初始化
+        // ═══════════════════════════════════════
+        var intervalInput = document.getElementById('interval-num');
+        var logBox = document.getElementById('log-box');
+        var boxVersionDisp = document.getElementById('box-version');
+        var boxBinDisp = document.getElementById('box-bin');
+        var boxNetDisp = document.getElementById('box-net');
+        var boxProxyDisp = document.getElementById('box-proxy');
+        var boxPidDisp = document.getElementById('box-pid');
+        var boxStatusDisp = document.getElementById('box-status');
 
-        window.onload = () => {
+        window.onload = function() {
             getBoxInfo();
             checkBoxStatus();
             refreshLogs();
             loadSavedConfig();
-            autoDetectConfig(); // 全自动开启
+            autoDetectConfig();
         };
 
-        // 加载已保存的配置
         const loadSavedConfig = async () => {
             try {
-                const response = await fetch('/api/read?path=' + encodeURIComponent(CONF_PATH));
-                if (response.ok) {
-                    const text = await response.text();
-                    const intervalMatch = text.match(/INTERVAL=(\d+)/);
-                    if (intervalMatch) intervalInput.value = intervalMatch[1];
-                    
-                    // 恢复已勾选状态 (后续可增加持久化勾选记忆)
+                var text = await readFile(CONF_PATH);
+                if (text) {
+                    var m = text.match(/INTERVAL=(\d+)/);
+                    if (m) intervalInput.value = m[1];
                 }
             } catch (e) {}
         };
 
+        // ═══════════════════════════════════════
+        // Box 信息获取
+        // ═══════════════════════════════════════
         const getBoxInfo = async () => {
             try {
-                const verCmd = "grep '^version=' /data/adb/modules/box_for_root/module.prop | cut -d= -f2";
-                const verResp = await fetch('/api/exec?cmd=' + encodeURIComponent(verCmd));
-                if (verResp.ok) {
-                    const ver = await verResp.text();
-                    boxVersionDisp.innerText = 'Box for Root v' + (ver.trim() || 'Custom');
-                }
-                const cmd = "grep -E '^(bin_name|network_mode|proxy_mode)=' /data/adb/box/settings.ini | tr -d '\"'";
-                const response = await fetch('/api/exec?cmd=' + encodeURIComponent(cmd));
-                if (response.ok) {
-                    const text = await response.text();
-                    const info = {};
-                    text.split('\n').forEach(line => {
-                        const [key, val] = line.split('=');
-                        if (key) info[key.trim()] = val.trim();
-                    });
-                    if (info.bin_name) boxBinDisp.innerText = info.bin_name;
-                    if (info.network_mode) boxNetDisp.innerText = info.network_mode.toUpperCase();
-                    if (info.proxy_mode) boxProxyDisp.innerText = info.proxy_mode;
-                }
-                const pidResp = await fetch('/api/exec?cmd=' + encodeURIComponent('pidof box'));
-                const pid = await pidResp.text();
+                var ver = await shellExec("grep '^version=' /data/adb/modules/box_for_root/module.prop 2>/dev/null | cut -d= -f2");
+                boxVersionDisp.innerText = 'Box for Root v' + (ver.trim() || 'Custom');
+
+                var info = await shellExec("grep -E '^(bin_name|network_mode|proxy_mode)=' /data/adb/box/settings.ini 2>/dev/null | tr -d '\"'");
+                var parsed = {};
+                info.split('\n').forEach(function(line) {
+                    var parts = line.split('=');
+                    if (parts.length >= 2) parsed[parts[0].trim()] = parts.slice(1).join('=').trim();
+                });
+                if (parsed.bin_name) boxBinDisp.innerText = parsed.bin_name;
+                if (parsed.network_mode) boxNetDisp.innerText = parsed.network_mode.toUpperCase();
+                if (parsed.proxy_mode) boxProxyDisp.innerText = parsed.proxy_mode;
+
+                var pid = await shellExec('pidof mihomo || pidof sing-box || pidof xray || pidof v2fly || pidof hysteria || echo ""');
                 boxPidDisp.innerText = pid.trim() || '未运行';
             } catch (e) {}
         };
 
+        // ═══════════════════════════════════════
+        // Box 运行状态检测
+        // ═══════════════════════════════════════
         const checkBoxStatus = async () => {
             try {
-                const response = await fetch('/api/exec?cmd=' + encodeURIComponent('pidof box'));
-                if (response.ok) {
-                    const pid = await response.text();
-                    if (pid.trim()) {
-                        boxStatusDisp.innerHTML = '<span class="status-dot" style="background: #10b981; box-shadow: 0 0 8px #10b981;"></span>Box 已开启';
-                        boxStatusDisp.style.color = '#10b981';
-                        return true;
-                    }
+                var pid = await shellExec('pidof mihomo || pidof sing-box || pidof xray || pidof v2fly || pidof hysteria || echo ""');
+                if (pid.trim()) {
+                    boxStatusDisp.innerHTML = '<span class="status-dot" style="background: #10b981; box-shadow: 0 0 8px #10b981;"></span>Box 已开启';
+                    boxStatusDisp.style.color = '#10b981';
+                    return true;
                 }
             } catch (e) {}
             boxStatusDisp.innerHTML = '<span class="status-dot" style="background: #ef4444; box-shadow: 0 0 8px #ef4444;"></span>Box 未开启';
@@ -427,92 +464,74 @@
             return false;
         };
 
-        document.getElementById('update-btn').onclick = async () => {
-            const isRunning = await checkBoxStatus();
+        // 手动更新
+        document.getElementById('update-btn').onclick = async function() {
+            var isRunning = await checkBoxStatus();
             if (!isRunning) return alert('Box 未开启！');
-            await fetch('/api/exec?cmd=' + encodeURIComponent(`${MOD_DIR}box-sub-up.sh &`));
+            await shellExec('sh /data/adb/modules/box-sub-up/box-sub-up.sh &');
             alert('指令已发出。');
         };
 
-        const getFileMtime = async () => { };
-
-        // 保存逻辑：构建映射字符串
-        document.getElementById('save-btn').onclick = async () => {
-            const val = parseInt(intervalInput.value);
+        // 保存配置
+        document.getElementById('save-btn').onclick = async function() {
+            var val = parseInt(intervalInput.value);
             if (!detectedMainConf) return alert('未侦测到有效的 Box 主配置路径，请检查 Box 是否安装正确。');
-            
-            const checks = document.querySelectorAll('.sub-check:checked');
-            const mapStr = Array.from(checks).map(c => `${c.dataset.tag}|${c.dataset.path}`).join(';');
-            
+
+            var checks = document.querySelectorAll('.sub-check:checked');
+            var mapStr = Array.from(checks).map(function(c) { return c.dataset.tag + '|' + c.dataset.path; }).join(';');
+
             if (!mapStr) return alert('请选择至少一个需要自动更新的项目。');
 
-            const coreType = detectedMainConf.endsWith('.json') ? 'sing-box' : 'mihomo';
-            const content = `INTERVAL=${val}\nCORE_TYPE="${coreType}"\nMAIN_CONF="${detectedMainConf}"\nWATCH_MAP="${mapStr}"`;
+            var coreType = detectedMainConf.endsWith('.json') ? 'sing-box' : 'mihomo';
+            var confContent = 'INTERVAL=' + val + '\nCORE_TYPE="' + coreType + '"\nMAIN_CONF="' + detectedMainConf + '"\nWATCH_MAP="' + mapStr + '"';
 
             try {
-                await fetch('/api/write?path=' + encodeURIComponent(CONF_PATH) + '&data=' + encodeURIComponent(content));
-                alert('智能监控已激活！更新器将精准守护您选择的项目。');
+                await writeFile(CONF_PATH, confContent);
+                alert('智能监控已激活！');
             } catch (e) {
                 alert('保存失败。');
             }
         };
 
-        // 备份逻辑
-        document.getElementById('backup-btn').onclick = async () => {
+        // 备份
+        document.getElementById('backup-btn').onclick = async function() {
             if (!detectedMainConf) return alert('未侦测到核心路径，无法备份。');
-            
-            const bakDir = '/storage/emulated/0/Android/box_config_bak';
-            const binName = document.getElementById('detected-core').innerText;
-            const ext = detectedMainConf.endsWith('.json') ? 'json' : 'yaml';
-            const bakPath = `${bakDir}/${binName}_config.${ext}.bak`;
-
-            const cmd = `mkdir -p ${bakDir} && cp -f "${detectedMainConf}" "${bakPath}"`;
-            
+            var bakDir = '/storage/emulated/0/Android/box_config_bak';
+            var binName = document.getElementById('detected-core').innerText;
+            var ext = detectedMainConf.endsWith('.json') ? 'json' : 'yaml';
+            var bakPath = bakDir + '/' + binName + '_config.' + ext + '.bak';
             try {
-                await fetch('/api/exec?cmd=' + encodeURIComponent(cmd));
-                alert(`备份成功！\n核心: ${binName}\n路径: ${bakPath}`);
+                await shellExec('mkdir -p ' + bakDir + ' && cp -f "' + detectedMainConf + '" "' + bakPath + '"');
+                alert('备份成功！\n路径: ' + bakPath);
             } catch (e) {
-                alert('备份失败，请检查写入权限。');
+                alert('备份失败。');
             }
         };
 
-        // 还原逻辑 (动态对齐)
-        document.getElementById('restore-btn').onclick = async () => {
-            await autoDetectConfig(); // 还原前强制刷新一次侦测，确保路径对齐
-            
+        // 还原
+        document.getElementById('restore-btn').onclick = async function() {
+            await autoDetectConfig();
             if (!detectedMainConf) return alert('未侦测到核心路径，无法还原。');
-            
-            const bakDir = '/storage/emulated/0/Android/box_config_bak';
-            const binName = document.getElementById('detected-core').innerText;
-            const ext = detectedMainConf.endsWith('.json') ? 'json' : 'yaml';
-            const bakPath = `${bakDir}/${binName}_config.${ext}.bak`;
-
-            // 检查备份文件是否存在
-            const checkCmd = `[ -f "${bakPath}" ] && echo "exists"`;
-            try {
-                const resp = await fetch('/api/exec?cmd=' + encodeURIComponent(checkCmd));
-                const text = await resp.text();
-                if (text.trim() !== 'exists') {
-                    return alert(`未找到对应的备份文件：\n${bakPath}\n请先执行备份操作。`);
-                }
-
-                if (!confirm(`确定要将备份还原至以下路径吗？\n${detectedMainConf}\n此操作将覆盖当前配置！`)) return;
-
-                const restoreCmd = `cp -f "${bakPath}" "${detectedMainConf}"`;
-                await fetch('/api/exec?cmd=' + encodeURIComponent(restoreCmd));
-                alert('还原成功！正在重新解析配置文件内容...');
-                parseConfigFile(detectedMainConf);
-            } catch (e) {
-                alert('还原过程中发生错误。');
-            }
+            var bakDir = '/storage/emulated/0/Android/box_config_bak';
+            var binName = document.getElementById('detected-core').innerText;
+            var ext = detectedMainConf.endsWith('.json') ? 'json' : 'yaml';
+            var bakPath = bakDir + '/' + binName + '_config.' + ext + '.bak';
+            var check = await shellExec('[ -f "' + bakPath + '" ] && echo "exists"');
+            if (check.trim() !== 'exists') return alert('未找到备份文件：\n' + bakPath);
+            if (!confirm('确定要还原吗？\n' + detectedMainConf + '\n此操作将覆盖当前配置！')) return;
+            await shellExec('cp -f "' + bakPath + '" "' + detectedMainConf + '"');
+            alert('还原成功！');
+            parseConfigFile(detectedMainConf);
         };
 
+        // 日志刷新
         const refreshLogs = async () => {
             try {
-                const response = await fetch('/api/read?path=' + encodeURIComponent(LOG_PATH));
-                const text = await response.text();
-                logBox.innerHTML = text.split('\n').map(line => `<div class="log-line">${line}</div>`).join('');
-                logBox.scrollTop = logBox.scrollHeight;
+                var text = await readFile(LOG_PATH);
+                if (text) {
+                    logBox.innerHTML = text.split('\n').filter(function(l) { return l.trim(); }).map(function(line) { return '<div class="log-line">' + line + '</div>'; }).join('');
+                    logBox.scrollTop = logBox.scrollHeight;
+                }
             } catch (e) {}
         };
 
