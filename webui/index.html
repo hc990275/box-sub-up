@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sing-box 订阅更新器</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: rgba(30, 41, 59, 0.7);
+            --primary: #3b82f6;
+            --accent: #8b5cf6;
+            --text: #f8fafc;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Outfit', -apple-system, system-ui, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 500px;
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        header {
+            margin-bottom: 24px;
+            text-align: center;
+        }
+
+        h1 {
+            font-weight: 700;
+            font-size: 1.5rem;
+            background: linear-gradient(to right, #60a5fa, #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .card {
+            background: var(--card);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+
+        .label-group {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .label { font-size: 0.9rem; color: #94a3b8; font-weight: 500; }
+        .value { font-size: 1.2rem; font-weight: 700; color: var(--primary); }
+
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            background: #334155;
+            border-radius: 3px;
+            appearance: none;
+            outline: none;
+            margin: 10px 0;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: var(--primary);
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 10px var(--primary);
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 12px;
+            background: linear-gradient(to right, var(--primary), var(--accent));
+            color: white;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
+        }
+
+        button:active { transform: scale(0.98); opacity: 0.9; }
+
+        .log-container {
+            background: #000;
+            border-radius: 12px;
+            padding: 12px;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.8rem;
+            height: 150px;
+            overflow-y: auto;
+            border: 1px solid #334155;
+        }
+
+        .log-line {
+            margin-bottom: 4px;
+            color: #10b981;
+            white-space: pre-wrap;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #10b981;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 6px;
+            box-shadow: 0 0 8px #10b981;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Sing-box Dashboard</h1>
+            <div id="box-version" style="font-size: 0.7rem; color: #64748b; margin-top: 4px;">Box for Root v1.2.7</div>
+        </header>
+
+        <div class="card" style="padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; background: transparent; border: none; box-shadow: none;">
+            <div style="background: var(--card); padding: 16px; border-radius: 16px; border: 1px solid rgba(16, 185, 129, 0.2); text-align: center;">
+                <div class="label" style="font-size: 0.7rem; margin-bottom: 4px;">↓ DOWNLOAD</div>
+                <div id="dl-speed" class="value" style="color: #10b981; font-size: 1.1rem;">0 B/s</div>
+            </div>
+            <div style="background: var(--card); padding: 16px; border-radius: 16px; border: 1px solid rgba(59, 130, 246, 0.2); text-align: center;">
+                <div class="label" style="font-size: 0.7rem; margin-bottom: 4px;">↑ UPLOAD</div>
+                <div id="ul-speed" class="value" style="color: #3b82f6; font-size: 1.1rem;">0 B/s</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="label-group">
+                <span class="label">更新周期</span>
+                <div style="display: flex; align-items: center;">
+                    <input type="number" id="interval-num" min="1" max="1440" value="30" style="background: rgba(0,0,0,0.3); border: 1px solid #334155; color: #fff; padding: 5px 10px; border-radius: 8px; width: 80px; text-align: center; font-family: inherit; font-size: 1.1rem; outline: none;">
+                    <span class="value" style="margin-left: 10px; font-size: 1rem; color: #94a3b8;">min</span>
+                </div>
+            </div>
+            <button id="save-btn" style="margin-top: 15px;">保存配置</button>
+        </div>
+
+        <div class="card">
+            <div class="label-group">
+                <span class="label">服务状态</span>
+                <div id="status-container">
+                    <span id="box-status" style="font-size: 0.8rem; color: #94a3b8;"><span class="status-dot" style="background: #94a3b8; box-shadow: none;"></span>检测中...</span>
+                    <span id="updater-status" style="font-size: 0.8rem; color: #10b981; margin-left: 10px;"><span class="status-dot"></span>更新器就绪</span>
+                </div>
+            </div>
+            <div id="file-info" style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 12px; padding: 0 4px;">
+                配置文件最后刷新: <span id="mtime-val" style="color: #3b82f6;">正在获取...</span>
+            </div>
+            <div class="log-container" id="log-box">
+                <div class="log-line">等待加载日志...</div>
+            </div>
+            <button id="update-btn" style="margin-top: 15px; background: rgba(59, 130, 246, 0.1); border: 1px solid var(--primary); box-shadow: none;">立即手动更新</button>
+        </div>
+    </div>
+
+    <script>
+        // Magisk WebUI 通信路径 (适配标准路径)
+        const MOD_DIR = window.location.pathname.split('webui')[0];
+        const CONF_PATH = '/storage/emulated/0/Android/sub_config.conf';
+        const LOG_PATH = '/storage/emulated/0/Android/sub.log';
+        const BOX_CONF_PATH = '/data/adb/box/sing-box/config.json';
+
+        // 初始化
+        const intervalInput = document.getElementById('interval-num');
+        const logBox = document.getElementById('log-box');
+        const boxStatusDisp = document.getElementById('box-status');
+        const mtimeDisp = document.getElementById('mtime-val');
+        const dlDisp = document.getElementById('dl-speed');
+        const ulDisp = document.getElementById('ul-speed');
+
+        // 格式化流量单位
+        const formatSpeed = (bytes) => {
+            if (bytes < 1024) return bytes + ' B/s';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB/s';
+            return (bytes / 1048576).toFixed(2) + ' MB/s';
+        };
+
+        // 启动流量监控 (使用 sing-box 接口)
+        const startTrafficLog = async () => {
+            try {
+                const response = await fetch('http://127.0.0.1:9090/traffic');
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    const data = JSON.parse(decoder.decode(value));
+                    dlDisp.innerText = formatSpeed(data.down);
+                    ulDisp.innerText = formatSpeed(data.up);
+                    
+                    // 动态更新卡片阴影强度，模拟脉冲效果
+                    dlDisp.parentElement.style.boxShadow = `0 0 ${Math.min(data.down/10240, 15)}px rgba(16, 185, 129, 0.4)`;
+                    ulDisp.parentElement.style.boxShadow = `0 0 ${Math.min(data.up/10240, 15)}px rgba(59, 130, 246, 0.4)`;
+                }
+            } catch (e) {
+                console.error('流量接口连接失败', e);
+                setTimeout(startTrafficLog, 5000); // 失败重连
+            }
+        };
+
+        // 检测 Box 运行状态
+        const checkBoxStatus = async () => {
+            try {
+                const response = await fetch('/api/exec?cmd=' + encodeURIComponent('pidof box'));
+                if (response.ok) {
+                    const pid = await response.text();
+                    if (pid.trim()) {
+                        boxStatusDisp.innerHTML = '<span class="status-dot" style="background: #10b981; box-shadow: 0 0 8px #10b981;"></span>Box 已开启';
+                        boxStatusDisp.style.color = '#10b981';
+                        return true;
+                    } else {
+                        boxStatusDisp.innerHTML = '<span class="status-dot" style="background: #ef4444; box-shadow: 0 0 8px #ef4444;"></span>Box 未开启';
+                        boxStatusDisp.style.color = '#ef4444';
+                        return false;
+                    }
+                }
+            } catch (e) {
+                console.error('状态检测失败', e);
+            }
+            return false;
+        };
+
+        // 获取文件修改时间
+        const getFileMtime = async () => {
+            try {
+                const response = await fetch('/api/exec?cmd=' + encodeURIComponent(`date -r ${BOX_CONF_PATH} "+%Y-%m-%d %H:%M:%S"`));
+                if (response.ok) {
+                    const mtime = await response.text();
+                    mtimeDisp.innerText = mtime.trim() || '文件未找到';
+                }
+            } catch (e) {
+                mtimeDisp.innerText = '获取失败';
+            }
+        };
+
+        // 页面加载瞬间进行检测
+        window.onload = () => {
+            checkBoxStatus();
+            getFileMtime();
+            refreshLogs();
+            startTrafficLog(); // 启动流量监控
+        };
+
+        setInterval(checkBoxStatus, 5000);
+        setInterval(getFileMtime, 10000);
+
+        // 手动更新前先检测 Box
+        document.getElementById('update-btn').onclick = async () => {
+            const isRunning = await checkBoxStatus();
+            if (!isRunning) {
+                alert('Box 未开启，无法执行更新！');
+                return;
+            }
+            try {
+                // 触发模块 action.sh 或脚本更新逻辑
+                await fetch('/api/exec?cmd=' + encodeURIComponent(`${MOD_DIR}singbox_sub_update.sh &`));
+                alert('更新指令已发出，请观察日志或文件时间。');
+            } catch (e) {
+                alert('指令发送失败');
+            }
+        };
+
+        // 保存逻辑
+        document.getElementById('save-btn').onclick = async () => {
+            const val = parseInt(intervalInput.value);
+            if (isNaN(val) || val < 1) {
+                alert('请输入有效的分钟数（最小1分钟）');
+                return;
+            }
+            const content = `INTERVAL=${val}`;
+            // 注意：WebUI 读写文件依赖管理器提供的原生 API 转发
+            // 这里使用 KSUDocs 推荐的 fetch 方式或预设 API
+            try {
+                const response = await fetch('/api/write?path=' + encodeURIComponent(CONF_PATH) + '&data=' + encodeURIComponent(content));
+                alert('配置已更新为 ' + val + ' 分钟！');
+            } catch (e) {
+                // 如果是常规浏览器预览，提示手动操作
+                console.error(e);
+                alert('环境检测：请在手机管理器中运行以提交修改');
+            }
+        };
+
+        // 刷新日志
+        const refreshLogs = async () => {
+            try {
+                const response = await fetch('/api/read?path=' + encodeURIComponent(LOG_PATH));
+                const text = await response.text();
+                logBox.innerHTML = text.split('\n').map(line => `<div class="log-line">${line}</div>`).join('');
+                logBox.scrollTop = logBox.scrollHeight;
+            } catch (e) {
+                logBox.innerHTML = '<div class="log-line">无法获取日志，请检查权限。</div>';
+            }
+        };
+
+        setInterval(refreshLogs, 3000);
+        refreshLogs();
+    </script>
+</body>
+</html>
