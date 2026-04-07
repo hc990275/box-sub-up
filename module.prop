@@ -1,7 +1,7 @@
 id=box-sub-up
 name=Box Subscription Auto-Updater
-version=v1.4.0
-versionCode=140
+version=v1.5.0
+versionCode=150
 author=Antigravity
 description=为 Box for Root 提供的订阅自动更新扩展。支持 WebUI 可视化配置与实时流量监控。
 updateJson=https://raw.githubusercontent.com/hc990275/box-sub-up/main/update.json

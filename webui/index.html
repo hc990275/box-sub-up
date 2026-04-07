@@ -215,6 +215,11 @@
             <button id="save-btn" style="margin-top: 15px;">保存配置并启动监控</button>
         </div>
 
+        <div class="card" id="recovery-card" style="display: flex; gap: 10px; padding: 16px;">
+            <button id="backup-btn" style="flex: 1; background: linear-gradient(135deg, #8b5cf6, #d946ef); padding: 10px; font-size: 0.85rem;">备份配置</button>
+            <button id="restore-btn" style="flex: 1; background: linear-gradient(135deg, #f59e0b, #ef4444); padding: 10px; font-size: 0.85rem;">还原备份</button>
+        </div>
+
         <div class="card">
             <div class="label-group">
                 <span class="label">服务状态</span>
@@ -428,6 +433,56 @@
                 alert('智能监控已激活！更新器将精准守护您选择的项目。');
             } catch (e) {
                 alert('保存失败。');
+            }
+        };
+
+        // 备份逻辑
+        document.getElementById('backup-btn').onclick = async () => {
+            if (!detectedMainConf) return alert('未侦测到核心路径，无法备份。');
+            
+            const bakDir = '/storage/emulated/0/Android/box_config_bak';
+            const binName = document.getElementById('detected-core').innerText;
+            const ext = detectedMainConf.endsWith('.json') ? 'json' : 'yaml';
+            const bakPath = `${bakDir}/${binName}_config.${ext}.bak`;
+
+            const cmd = `mkdir -p ${bakDir} && cp -f "${detectedMainConf}" "${bakPath}"`;
+            
+            try {
+                await fetch('/api/exec?cmd=' + encodeURIComponent(cmd));
+                alert(`备份成功！\n核心: ${binName}\n路径: ${bakPath}`);
+            } catch (e) {
+                alert('备份失败，请检查写入权限。');
+            }
+        };
+
+        // 还原逻辑 (动态对齐)
+        document.getElementById('restore-btn').onclick = async () => {
+            await autoDetectConfig(); // 还原前强制刷新一次侦测，确保路径对齐
+            
+            if (!detectedMainConf) return alert('未侦测到核心路径，无法还原。');
+            
+            const bakDir = '/storage/emulated/0/Android/box_config_bak';
+            const binName = document.getElementById('detected-core').innerText;
+            const ext = detectedMainConf.endsWith('.json') ? 'json' : 'yaml';
+            const bakPath = `${bakDir}/${binName}_config.${ext}.bak`;
+
+            // 检查备份文件是否存在
+            const checkCmd = `[ -f "${bakPath}" ] && echo "exists"`;
+            try {
+                const resp = await fetch('/api/exec?cmd=' + encodeURIComponent(checkCmd));
+                const text = await resp.text();
+                if (text.trim() !== 'exists') {
+                    return alert(`未找到对应的备份文件：\n${bakPath}\n请先执行备份操作。`);
+                }
+
+                if (!confirm(`确定要将备份还原至以下路径吗？\n${detectedMainConf}\n此操作将覆盖当前配置！`)) return;
+
+                const restoreCmd = `cp -f "${bakPath}" "${detectedMainConf}"`;
+                await fetch('/api/exec?cmd=' + encodeURIComponent(restoreCmd));
+                alert('还原成功！正在重新解析配置文件内容...');
+                parseConfigFile(detectedMainConf);
+            } catch (e) {
+                alert('还原过程中发生错误。');
             }
         };
 
