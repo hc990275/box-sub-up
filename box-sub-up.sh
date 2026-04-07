@@ -16,13 +16,17 @@ done
 sleep 10 # 模块运行通常比脚本慢一点点，减少延迟
 
 # 检测 Box 是否运行
+# 多重检测：进程 + 端口
 check_box_running() {
-    # 常用检测路径：Box 通常在 /data/adb/box/run/cache 记录状态，或检查核心进程 box
+    # 1. 进程检测
     if pidof box > /dev/null 2>&1; then
         return 0
-    else
-        return 1
     fi
+    # 2. 端口探测 (给 Clash API 1秒响应)
+    if curl -s --connect-timeout 1 "$API/version" > /dev/null 2>&1; then
+        return 0
+    fi
+    return 1
 }
 
 while true; do
@@ -99,5 +103,18 @@ while true; do
         echo "$SUMMARY_LOG" > "$LOG_FILE"
     fi
     
+    # 动态状态同步至 Magisk 列表 (Module Description)
+    COUNT=$(echo "$WATCH_MAP" | tr -cd ';' | wc -c)
+    COUNT=$((COUNT + 1))
+    [ -z "$WATCH_MAP" ] && COUNT=0
+    
+    DISPLAY_STATUS="[💎 运行中 | 内核: ${CORE_TYPE:-检测中} | 监视: ${COUNT}个 | 周期: ${INTERVAL}min]"
+    if ! check_box_running; then
+        DISPLAY_STATUS="[❌ Box未运行 | 更新器待命]"
+    fi
+    
+    # 物理更新 module.prop 以触发表带刷新
+    sed -i "s|^description=.*|description=${DISPLAY_STATUS} 为 Box for Root 提供的订阅自动更新扩展。|" "$MODDIR/module.prop"
+
     sleep $((INTERVAL * 60))
 done
