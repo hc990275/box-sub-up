@@ -404,7 +404,7 @@
         document.getElementById('update-btn').onclick = async () => {
             const isRunning = await checkBoxStatus();
             if (!isRunning) return alert('Box 未开启！');
-            await fetch('/api/exec?cmd=' + encodeURIComponent(`${MOD_DIR}singbox_sub_update.sh &`));
+            await fetch('/api/exec?cmd=' + encodeURIComponent(`${MOD_DIR}box-sub-up.sh &`));
             alert('指令已发出。');
         };
 

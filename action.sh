@@ -14,5 +14,5 @@ fi
 
 # 手动触发一次
 echo "\n正在尝试触发即时更新..."
-/system/bin/sh "$MODDIR/singbox_sub_update.sh" &
+/system/bin/sh "$MODDIR/box-sub-up.sh" &
 echo "请求已发出，后台正在刷新。"
