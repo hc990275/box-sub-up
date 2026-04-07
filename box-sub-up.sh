@@ -151,16 +151,11 @@ update_all_providers() {
     # 打印前 200 个字符的响应辅助排错
     debug_log "API 返回数据片段: $(echo "$resp" | head -c 200 | tr '\n' ' ')"
 
-    local names="" yq_bin="/data/adb/box/bin/yq"
-    if [ -x "$yq_bin" ]; then
-        names=$(echo "$resp" | "$yq_bin" -p json '.providers | values | .[] | select(.vehicleType != "Compatible") | .name' 2>/dev/null)
-        debug_log "使用 yq 提取的 Provider 名称: $names"
-    fi
-
-    if [ -z "$names" ]; then
-        names=$(echo "$resp" | tr '{' '\n' | grep '"vehicleType"' | grep -v 'Compatible' | grep -oE '"name"\s*:\s*"[^"]+"' | cut -d'"' -f4)
-        debug_log "使用 grep 提取的 Provider 名称: $names"
-    fi
+    # 【核心修复】引入你之前的提取逻辑：
+    # 巧妙利用 sed 和 grep，提取带有 \",\"proxies\" 的顶级机场名，完美应对 sing-box/mihomo
+    local names=""
+    names=$(echo "$resp" | sed 's/"name":"/\n/g' | grep '","proxies"' | awk -F'"' '{print $1}' | grep -v 'default')
+    debug_log "使用单行逻辑提取的 Provider 名称: $names"
 
     if [ -z "$names" ]; then
         write_log "未发现订阅项目"
