@@ -1,9 +1,10 @@
 #!/system/bin/sh
 # Box-sub-up v2.0 — 基于 Clash API 的订阅自动更新守护进程
-# 通过 GET/PUT /providers/proxies 实现一键更新全部订阅
+# 开启了详细的 Debug 日志记录模式：/storage/emulated/0/Android/sub_debug.log
 
 MODDIR=${0%/*}
 LOG_FILE="/storage/emulated/0/Android/sub.log"
+DEBUG_LOG="/storage/emulated/0/Android/sub_debug.log"
 CONF_FILE="/storage/emulated/0/Android/sub_config.conf"
 DEFAULT_INTERVAL=30
 API="http://127.0.0.1:9090"
@@ -11,44 +12,11 @@ SECRET=""
 CURL="curl"
 MODE="daemon"
 
-# 解析参数
 [ "$1" = "--once" ] && MODE="once"
 
 # ═══════════════════════════════════════
-# 工具函数
+# 日志函数
 # ═══════════════════════════════════════
-
-# 确保 curl 可用
-init_curl() {
-    if command -v curl > /dev/null 2>&1; then
-        CURL="curl"
-    elif [ -x "/data/adb/box/bin/curl" ]; then
-        CURL="/data/adb/box/bin/curl"
-    else
-        write_log "curl 未找到，无法执行更新"
-        return 1
-    fi
-}
-
-# 带认证的 GET 请求
-api_get() {
-    if [ -n "$SECRET" ]; then
-        $CURL -s --connect-timeout 5 -H "Authorization: Bearer $SECRET" "${API}${1}"
-    else
-        $CURL -s --connect-timeout 5 "${API}${1}"
-    fi
-}
-
-# 带认证的 PUT 请求，返回 HTTP 状态码
-api_put() {
-    if [ -n "$SECRET" ]; then
-        $CURL -s -o /dev/null -w "%{http_code}" -X PUT --max-time 30 -H "Authorization: Bearer $SECRET" "${API}${1}" -d ""
-    else
-        $CURL -s -o /dev/null -w "%{http_code}" -X PUT --max-time 30 "${API}${1}" -d ""
-    fi
-}
-
-# 写入日志（保留最近 15 条）
 write_log() {
     local entry="[$(date '+%m-%d %H:%M:%S')] $1"
     if [ -f "$LOG_FILE" ]; then
@@ -60,82 +28,161 @@ write_log() {
     fi
 }
 
+debug_log() {
+    echo "[$(date '+%m-%d %H:%M:%S')] [DEBUG] $1" >> "$DEBUG_LOG"
+}
+
 # ═══════════════════════════════════════
-# API 地址和密钥自动侦测
+# 核心功能加载
 # ═══════════════════════════════════════
+init_curl() {
+    if command -v curl > /dev/null 2>&1; then
+        CURL="curl"
+        debug_log "curl: 系统 curl 可用"
+    elif [ -x "/data/adb/box/bin/curl" ]; then
+        CURL="/data/adb/box/bin/curl"
+        debug_log "curl: 使用 Box 自带的 curl"
+    else
+        write_log "curl 未找到，无法执行更新"
+        debug_log "curl: 致命错误，找不到任何 curl"
+        return 1
+    fi
+}
+
+api_get() {
+    local cmd
+    if [ -n "$SECRET" ]; then
+        cmd="$CURL -s --connect-timeout 5 -H \"Authorization: Bearer $SECRET\" \"${API}${1}\""
+    else
+        cmd="$CURL -s --connect-timeout 5 \"${API}${1}\""
+    fi
+    debug_log "api_get 执行: $cmd"
+    eval "$cmd"
+}
+
+api_put() {
+    local cmd
+    if [ -n "$SECRET" ]; then
+        cmd="$CURL -s -o /dev/null -w \"%{http_code}\" -X PUT --max-time 30 -H \"Authorization: Bearer $SECRET\" \"${API}${1}\" -d \"\""
+    else
+        cmd="$CURL -s -o /dev/null -w \"%{http_code}\" -X PUT --max-time 30 \"${API}${1}\" -d \"\""
+    fi
+    debug_log "api_put 执行: $cmd"
+    eval "$cmd"
+}
+
 detect_api_config() {
-    # 从用户配置加载间隔
+    debug_log "开始侦测 API 配置..."
     [ -f "$CONF_FILE" ] && . "$CONF_FILE" 2>/dev/null
 
-    # 从 Box settings.ini 获取核心信息
-    [ -f "/data/adb/box/settings.ini" ] && . /data/adb/box/settings.ini 2>/dev/null
+    local bb_awk="awk"
+    [ -x "/data/adb/magisk/busybox" ] && bb_awk="/data/adb/magisk/busybox awk"
+    [ -x "/data/adb/ksu/bin/busybox" ] && bb_awk="/data/adb/ksu/bin/busybox awk"
+
+    if [ ! -f "/data/adb/box/settings.ini" ]; then
+        debug_log "settings.ini 不存在"
+        return
+    fi
+
+    . /data/adb/box/settings.ini 2>/dev/null
+    debug_log "探测到 core_name=${bin_name}"
 
     local ec="" sc=""
     case "$bin_name" in
         mihomo)
-            [ -f "$mihomo_config" ] || return
-            ec=$(busybox awk '/^external-controller:/{print $2}' "$mihomo_config" 2>/dev/null | tr -d "'\"")
-            sc=$(busybox awk '/^secret:/{print $2}' "$mihomo_config" 2>/dev/null | tr -d "'\"")
+            if [ -f "$mihomo_config" ]; then
+                ec=$($bb_awk '/^external-controller:/{print $2}' "$mihomo_config" 2>/dev/null | tr -d "'\"")
+                sc=$($bb_awk '/^secret:/{print $2}' "$mihomo_config" 2>/dev/null | tr -d "'\"")
+                debug_log "Mihomo: 获取到 external-controller=$ec, secret=${sc:0:3}***"
+            else
+                debug_log "Mihomo 配置未找到: $mihomo_config"
+            fi
             ;;
         sing-box)
-            [ -f "$sing_config" ] || return
-            ec=$(busybox awk -F'[:,]' '/"external_controller"/{print $2":"$3}' "$sing_config" 2>/dev/null | tr -d ' "')
-            sc=$(busybox awk -F'"' '/"secret"/{print $4}' "$sing_config" 2>/dev/null | head -1)
+            if [ -f "$sing_config" ]; then
+                ec=$($bb_awk -F'[:,]' '/"external_controller"/{print $2":"$3}' "$sing_config" 2>/dev/null | tr -d ' "')
+                sc=$($bb_awk -F'"' '/"secret"/{print $4}' "$sing_config" 2>/dev/null | head -1)
+                debug_log "Sing-box: 获取到 external_controller=$ec, secret=${sc:0:3}***"
+            else
+                debug_log "Sing-box 配置未找到: $sing_config"
+            fi
             ;;
     esac
 
     [ -n "$ec" ] && API="http://$ec"
     [ -n "$sc" ] && SECRET="$sc"
+    
+    # 防止读取到的是 0.0.0.0
+    API=$(echo "$API" | sed 's/0.0.0.0/127.0.0.1/g')
+    debug_log "最终确定的 API=$API"
 }
 
-# ═══════════════════════════════════════
-# Box 运行状态检测（三保险）
-# ═══════════════════════════════════════
 check_box_running() {
-    [ -f "/data/adb/box/run/box.pid" ] && return 0
+    if [ -f "/data/adb/box/run/box.pid" ]; then
+        debug_log "check_box_running: box.pid 存在"
+        return 0
+    fi
     for core in mihomo sing-box xray v2fly hysteria; do
-        pidof "$core" > /dev/null 2>&1 && return 0
+        if pidof "$core" > /dev/null 2>&1; then
+            debug_log "check_box_running: pidof $core 成功"
+            return 0
+        fi
     done
-    api_get "/version" > /dev/null 2>&1 && return 0
+    if api_get "/version" > /dev/null 2>&1; then
+        debug_log "check_box_running: API /version 探测成功"
+        return 0
+    fi
+    debug_log "check_box_running: Box 未运行!"
     return 1
 }
 
-# ═══════════════════════════════════════
-# 核心：一键更新全部订阅
-# ═══════════════════════════════════════
 update_all_providers() {
-    # 获取全部 provider 列表
+    debug_log "开始更新所有 Provider..."
+    
     local resp
     resp=$(api_get "/providers/proxies" 2>/dev/null)
 
     if [ -z "$resp" ]; then
         write_log "API无响应，跳过更新"
+        debug_log "更新失败: /providers/proxies 无任何返回数据"
         return 1
     fi
 
-    # 提取 provider 名称
-    # 方法1: yq（精确）
+    # 打印前 200 个字符的响应辅助排错
+    debug_log "API 返回数据片段: $(echo "$resp" | head -c 200 | tr '\n' ' ')"
+
     local names="" yq_bin="/data/adb/box/bin/yq"
     if [ -x "$yq_bin" ]; then
-        names=$(echo "$resp" | "$yq_bin" -p json '.providers | keys | .[]' 2>/dev/null)
+        names=$(echo "$resp" | "$yq_bin" -p json '.providers | values | .[] | select(.vehicleType != "Compatible") | .name' 2>/dev/null)
+        debug_log "使用 yq 提取的 Provider 名称: $names"
     fi
 
-    # 方法2: grep 回退（通过 vehicleType 字段过滤出真正的 provider）
     if [ -z "$names" ]; then
-        names=$(echo "$resp" | tr '{' '\n' | grep '"vehicleType"' | grep -oE '"name"\s*:\s*"[^"]+"' | cut -d'"' -f4)
+        names=$(echo "$resp" | tr '{' '\n' | grep '"vehicleType"' | grep -v 'Compatible' | grep -oE '"name"\s*:\s*"[^"]+"' | cut -d'"' -f4)
+        debug_log "使用 grep 提取的 Provider 名称: $names"
     fi
 
     if [ -z "$names" ]; then
         write_log "未发现订阅项目"
+        debug_log "提取 Provider 失败或本身为空配置"
         return 1
     fi
 
-    # 逐个触发更新
     local ok=0 fail=0 total=0 detail=""
-    for name in $names; do
+    
+    # 替换换行或空格，处理成多行以便遍历
+    echo "$names" | while IFS= read -r name; do
+        [ -z "$name" ] && continue
         total=$((total + 1))
+        debug_log "开始触发 Provider 更新: $name"
+        
+        # 将特殊字符转化为 URL 编码，以避免 curl 问题
+        local safe_name=$(echo "$name" | sed -e 's/ /%20/g' -e 's/|/%7C/g' -e 's/!/%21/g')
+        
         local code
-        code=$(api_put "/providers/proxies/$(echo "$name" | sed 's/ /%20/g')")
+        code=$(api_put "/providers/proxies/$safe_name")
+        debug_log "触发结果 $name -> HTTP Code: $code"
+        
         if [ "$code" = "204" ] || [ "$code" = "200" ]; then
             ok=$((ok + 1))
             detail="$detail $name:✓"
@@ -145,38 +192,66 @@ update_all_providers() {
         fi
         sleep 0.5
     done
+    # 由于 while 管道会引发子 shell，我们需要使用临时文件或绕过管道，上面我们简化一下，或者使用此方法（修复子shell计数问题）：
+    
+    # 重新正确实现不产生子 shell 的计数
+    ok=0; fail=0; total=0; detail=""
+    for name in $(echo "$names" | tr '\n' '@' | sed 's/ /___/g'); do
+        # 恢复空格
+        name=$(echo "$name" | sed 's/___/ /g')
+        [ "$name" = "@" ] && continue
+        [ -z "$name" ] && continue
+        # 清除前面的符号
+        name=$(echo "$name" | tr -d '@')
+        [ -z "$name" ] && continue
+        
+        total=$((total + 1))
+        local safe_name=$(echo "$name" | sed -e 's/ /%20/g')
+        local code=$(api_put "/providers/proxies/$safe_name")
+        
+        if [ "$code" = "204" ] || [ "$code" = "200" ] || [ "$code" = "202" ]; then
+            ok=$((ok + 1))
+            detail="$detail $name:✓"
+        else
+            fail=$((fail + 1))
+            detail="$detail $name:✗($code)"
+            debug_log ">> 失败详情: URL 编码可能不准确，请求为 /providers/proxies/$safe_name"
+        fi
+        sleep 0.5
+    done
 
     write_log "更新${ok}/${total}${detail}"
+    debug_log "更新完成。总计: $total, 成功: $ok, 失败: $fail"
 
-    # 更新 module.prop 显示状态
-    local last_time
-    last_time=$(date "+%H:%M")
     local interval_val="${INTERVAL:-$DEFAULT_INTERVAL}"
-    sed -i "s|^description=.*|description=[💎 运行中 | 订阅:${total}个 | 成功:${ok} | 周期:${interval_val}min | 更新:${last_time}] 基于 Clash API 的订阅自动更新|" "$MODDIR/module.prop"
+    sed -i "s|^description=.*|description=[💎 运行中 | 订阅:${total}个 | 成功:${ok} | 周期:${interval_val}min | 更新:$(date "+%H:%M")] 基于 Clash API 的自动更新|" "$MODDIR/module.prop"
 
     [ "$fail" -gt 0 ] && return 1
     return 0
 }
 
 # ═══════════════════════════════════════
-# 主入口
+# 主流程
 # ═══════════════════════════════════════
 
-# 单次模式（由 action.sh 调用）
 if [ "$MODE" = "once" ]; then
+    debug_log "==== 单次更新模式启动 ($MODE) ===="
     init_curl || exit 1
     detect_api_config
     if check_box_running; then
         update_all_providers
     else
         write_log "Box未运行，跳过更新"
+        debug_log "因 Box 未运行，取消本次更新操作"
     fi
+    debug_log "==== 单次更新流程结束 ===="
     exit 0
 fi
 
-# 守护进程模式
+debug_log "==== 守护模式更新进程启动 ===="
 until [ "$(getprop sys.boot_completed)" = "1" ]; do sleep 5; done
 sleep 15
+debug_log "系统已就绪，进入守护循环"
 
 init_curl || exit 1
 
@@ -187,7 +262,8 @@ while true; do
         update_all_providers
     else
         write_log "Box未运行，跳过更新"
-        sed -i "s|^description=.*|description=[❌ Box未运行 | 更新器待命] 基于 Clash API 的订阅自动更新|" "$MODDIR/module.prop"
+        debug_log "守护循环中检测到 Box 未运行"
+        sed -i "s|^description=.*|description=[❌ Box未运行 | 更新器待命] 基于 Clash API 的自动更新|" "$MODDIR/module.prop"
     fi
 
     sleep $(( ${INTERVAL:-$DEFAULT_INTERVAL} * 60 ))
