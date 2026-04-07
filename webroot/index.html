@@ -222,21 +222,44 @@
     </div>
 
     <script>
-        // 统一接口层
-        const isKsu = () => !!(window.ksu && typeof window.ksu.exec === 'function');
+        // 统一接口层：适配 KSU / APatch / Box Web 服务
         const shellExec = async (cmd) => {
-            if (isKsu()) {
-                const res = await window.ksu.exec(cmd);
-                return (res && res.stdout) ? res.stdout : '';
+            try {
+                if (window.ksu && typeof window.ksu.exec === 'function') {
+                    let res = await window.ksu.exec(cmd);
+                    if (typeof res === 'string') { try { res = JSON.parse(res); } catch(e){} }
+                    return (res && typeof res.stdout !== 'undefined') ? res.stdout : String(res);
+                }
+                if (window.apatch && typeof window.apatch.exec === 'function') {
+                    let res = await window.apatch.exec(cmd);
+                    if (typeof res === 'string') { try { res = JSON.parse(res); } catch(e){} }
+                    return (res && typeof res.stdout !== 'undefined') ? res.stdout : String(res);
+                }
+                // 回退到 Box 标准 REST 层
+                const resp = await fetch('/api/exec?cmd=' + encodeURIComponent(cmd));
+                return resp.ok ? await resp.text() : '';
+            } catch (e) {
+                console.error("Exec err:", e);
+                return '';
             }
-            const resp = await fetch('/api/exec?cmd=' + encodeURIComponent(cmd));
-            return resp.ok ? await resp.text() : '';
         };
 
         let apiAddr = '127.0.0.1:9090';
         let apiSecret = '';
+        let curlBin = 'curl';
         const CONF_PATH = '/storage/emulated/0/Android/sub_config.conf';
         const LOG_PATH = '/storage/emulated/0/Android/sub.log';
+
+        // 探测 curl 工具，因为大量国产源生安卓没有自带 curl
+        const initCurl = async () => {
+            let res = await shellExec('command -v curl || echo "NULL"');
+            if (res.includes("NULL") || res.trim() === "") {
+                let boxc = await shellExec('[ -x "/data/adb/box/bin/curl" ] && echo "/data/adb/box/bin/curl" || echo "NULL"');
+                if (boxc.includes("/data/adb/box/bin/curl")) {
+                    curlBin = '/data/adb/box/bin/curl';
+                }
+            }
+        };
 
         // 侦测 API 信息
         const detectApi = async () => {
@@ -277,15 +300,15 @@
                 document.getElementById('api-details').style.display = 'block';
                 return true;
             } catch(e) {
-                console.error(e);
+                console.error("Detect API info err:", e);
                 return false;
             }
         };
 
-        // 通过 curl 调用 API（规避 CORS 问题）
+        // 通过 curl 调用 API（规避 CORS 问题与浏览器原生限制）
         const fetchApi = async (endpoint, method = 'GET') => {
-            let cmd = 'curl -s -X ' + method + ' --connect-timeout 5 "http://' + apiAddr + endpoint + '"';
-            if(apiSecret) cmd = 'curl -s -X ' + method + ' -H "Authorization: Bearer ' + apiSecret + '" --connect-timeout 5 "http://' + apiAddr + endpoint + '"';
+            let cmd = curlBin + ' -s -X ' + method + ' --connect-timeout 5 "http://' + apiAddr + endpoint + '"';
+            if(apiSecret) cmd = curlBin + ' -s -X ' + method + ' -H "Authorization: Bearer ' + apiSecret + '" --connect-timeout 5 "http://' + apiAddr + endpoint + '"';
             if(method === 'PUT') cmd += ' -d "" -w "\\n%{http_code}"';
             return await shellExec(cmd);
         };
@@ -435,6 +458,7 @@
 
         // 初始化
         window.onload = async () => {
+            await initCurl();
             await detectApi();
             await loadCfgAndLogs();
             await loadProviders();
