@@ -5,4 +5,4 @@ versionCode=20260410
 author=Antigravity
 description=[钻石] 基于 Clash API 的订阅全自动更新扩展，内置完整可视化管理台。
 webUi=true
-updateJson=https://mirror.ghproxy.com/https://raw.githubusercontent.com/hc990275/box-sub-up/main/update.json
+updateJson=https://raw.githubusercontent.com/hc990275/box-sub-up/main/update.json
