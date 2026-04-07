@@ -45,6 +45,7 @@
             font-size: 1.5rem;
             background: linear-gradient(to right, #60a5fa, #a78bfa);
             -webkit-background-clip: text;
+            background-clip: text;
             -webkit-text-fill-color: transparent;
         }
 
@@ -135,18 +136,26 @@
 <body>
     <div class="container">
         <header>
-            <h1>Sing-box Dashboard</h1>
-            <div id="box-version" style="font-size: 0.7rem; color: #64748b; margin-top: 4px;">Box for Root v1.2.7</div>
+            <h1>Box-sub-up Control</h1>
+            <div id="box-version" style="font-size: 0.7rem; color: #64748b; margin-top: 4px;">Box for Root [Loading...]</div>
         </header>
 
-        <div class="card" style="padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; background: transparent; border: none; box-shadow: none;">
-            <div style="background: var(--card); padding: 16px; border-radius: 16px; border: 1px solid rgba(16, 185, 129, 0.2); text-align: center;">
-                <div class="label" style="font-size: 0.7rem; margin-bottom: 4px;">↓ DOWNLOAD</div>
-                <div id="dl-speed" class="value" style="color: #10b981; font-size: 1.1rem;">0 B/s</div>
+        <div class="card" id="box-info-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px; margin-bottom: 20px;">
+            <div class="info-item">
+                <div class="label" style="font-size: 0.65rem;">运行内核</div>
+                <div id="box-bin" class="value" style="font-size: 0.9rem; color: #3b82f6;">-</div>
             </div>
-            <div style="background: var(--card); padding: 16px; border-radius: 16px; border: 1px solid rgba(59, 130, 246, 0.2); text-align: center;">
-                <div class="label" style="font-size: 0.7rem; margin-bottom: 4px;">↑ UPLOAD</div>
-                <div id="ul-speed" class="value" style="color: #3b82f6; font-size: 1.1rem;">0 B/s</div>
+            <div class="info-item">
+                <div class="label" style="font-size: 0.65rem;">网络模式</div>
+                <div id="box-net" class="value" style="font-size: 0.9rem; color: #8b5cf6;">-</div>
+            </div>
+            <div class="info-item">
+                <div class="label" style="font-size: 0.65rem;">代理模式</div>
+                <div id="box-proxy" class="value" style="font-size: 0.9rem; color: #60a5fa;">-</div>
+            </div>
+            <div class="info-item">
+                <div class="label" style="font-size: 0.65rem;">核心 PID</div>
+                <div id="box-pid" class="value" style="font-size: 0.9rem; color: #10b981;">-</div>
             </div>
         </div>
 
@@ -191,37 +200,46 @@
         const logBox = document.getElementById('log-box');
         const boxStatusDisp = document.getElementById('box-status');
         const mtimeDisp = document.getElementById('mtime-val');
-        const dlDisp = document.getElementById('dl-speed');
-        const ulDisp = document.getElementById('ul-speed');
+        const boxBinDisp = document.getElementById('box-bin');
+        const boxNetDisp = document.getElementById('box-net');
+        const boxProxyDisp = document.getElementById('box-proxy');
+        const boxPidDisp = document.getElementById('box-pid');
 
-        // 格式化流量单位
-        const formatSpeed = (bytes) => {
-            if (bytes < 1024) return bytes + ' B/s';
-            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB/s';
-            return (bytes / 1048576).toFixed(2) + ' MB/s';
-        };
+        const boxVersionDisp = document.getElementById('box-version');
 
-        // 启动流量监控 (使用 sing-box 接口)
-        const startTrafficLog = async () => {
+        // 获取 Box 详细配置信息
+        const getBoxInfo = async () => {
             try {
-                const response = await fetch('http://127.0.0.1:9090/traffic');
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    const data = JSON.parse(decoder.decode(value));
-                    dlDisp.innerText = formatSpeed(data.down);
-                    ulDisp.innerText = formatSpeed(data.up);
-                    
-                    // 动态更新卡片阴影强度，模拟脉冲效果
-                    dlDisp.parentElement.style.boxShadow = `0 0 ${Math.min(data.down/10240, 15)}px rgba(16, 185, 129, 0.4)`;
-                    ulDisp.parentElement.style.boxShadow = `0 0 ${Math.min(data.up/10240, 15)}px rgba(59, 130, 246, 0.4)`;
+                // 1. 获取 Box 版本 (从模块安装目录读取)
+                const verCmd = "grep '^version=' /data/adb/modules/box_for_root/module.prop | cut -d= -f2";
+                const verResp = await fetch('/api/exec?cmd=' + encodeURIComponent(verCmd));
+                if (verResp.ok) {
+                    const ver = await verResp.text();
+                    boxVersionDisp.innerText = 'Box for Root v' + (ver.trim() || 'Custom');
                 }
+
+                // 2. 提取 bin_name, network_mode, proxy_mode
+                const cmd = "grep -E '^(bin_name|network_mode|proxy_mode)=' /data/adb/box/box/settings.ini | tr -d '\"'";
+                const response = await fetch('/api/exec?cmd=' + encodeURIComponent(cmd));
+                if (response.ok) {
+                    const text = await response.text();
+                    const info = {};
+                    text.split('\n').forEach(line => {
+                        const [key, val] = line.split('=');
+                        if (key) info[key.trim()] = val.trim();
+                    });
+                    
+                    if (info.bin_name) boxBinDisp.innerText = info.bin_name;
+                    if (info.network_mode) boxNetDisp.innerText = info.network_mode.toUpperCase();
+                    if (info.proxy_mode) boxProxyDisp.innerText = info.proxy_mode;
+                }
+
+                // 获取 PID
+                const pidResp = await fetch('/api/exec?cmd=' + encodeURIComponent('pidof box'));
+                const pid = await pidResp.text();
+                boxPidDisp.innerText = pid.trim() || '未运行';
             } catch (e) {
-                console.error('流量接口连接失败', e);
-                setTimeout(startTrafficLog, 5000); // 失败重连
+                console.error('获取 Box 信息失败', e);
             }
         };
 
@@ -262,12 +280,13 @@
 
         // 页面加载瞬间进行检测
         window.onload = () => {
+            getBoxInfo();
             checkBoxStatus();
             getFileMtime();
             refreshLogs();
-            startTrafficLog(); // 启动流量监控
         };
 
+        setInterval(getBoxInfo, 10000);
         setInterval(checkBoxStatus, 5000);
         setInterval(getFileMtime, 10000);
 
