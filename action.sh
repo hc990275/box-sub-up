@@ -1,18 +1,21 @@
 #!/system/bin/sh
-# Magisk 模块 Action 脚本
+# Magisk Action：手动触发一次订阅更新 + 显示日志
 
 MODDIR=${0%/*}
 LOG_FILE="/storage/emulated/0/Android/sub.log"
 
-# 显示当前日志信息
+echo "━━━ Box-sub-up 手动更新 ━━━"
+echo ""
+
+# 执行单次更新
+echo "⏳ 正在通过 Clash API 更新全部订阅..."
+sh "$MODDIR/box-sub-up.sh" --once
+echo ""
+
+# 显示最近日志
 if [ -f "$LOG_FILE" ]; then
-    echo "最近更新状态："
+    echo "━━━ 最近更新记录 ━━━"
     cat "$LOG_FILE"
 else
-    echo "暂无运行记录，请确保 sing-box 已启动且 API 正常。"
+    echo "暂无运行记录"
 fi
-
-# 手动触发一次
-echo "\n正在尝试触发即时更新..."
-/system/bin/sh "$MODDIR/box-sub-up.sh" &
-echo "请求已发出，后台正在刷新。"

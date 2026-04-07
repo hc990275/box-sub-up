@@ -1,129 +1,194 @@
 #!/system/bin/sh
-# sing-box 订阅后台自动定时更新脚本 (模块化适配版)
+# Box-sub-up v2.0 — 基于 Clash API 的订阅自动更新守护进程
+# 通过 GET/PUT /providers/proxies 实现一键更新全部订阅
 
 MODDIR=${0%/*}
-API="http://127.0.0.1:9090"
 LOG_FILE="/storage/emulated/0/Android/sub.log"
 CONF_FILE="/storage/emulated/0/Android/sub_config.conf"
-
-# 默认更新间隔（分钟）
 DEFAULT_INTERVAL=30
+API="http://127.0.0.1:9090"
+SECRET=""
+CURL="curl"
+MODE="daemon"
 
-# 等待系统启动完成
-until [ "$(getprop sys.boot_completed)" = "1" ]; do
-    sleep 5
-done
-sleep 10 # 模块运行通常比脚本慢一点点，减少延迟
+# 解析参数
+[ "$1" = "--once" ] && MODE="once"
 
-# 检测 Box 是否运行
-# Box 官方级“三保险”检测：PID文件 + 多进程扫描 + 端口探测
-check_box_running() {
-    # 1. 优先检查官方物理 PID 文件
-    [ -f "/data/adb/box/run/box.pid" ] && return 0
-    
-    # 2. 扫描所有可能的内核进程名 (对标 Box start.sh)
-    for core in "mihomo" "sing-box" "xray" "v2fly" "box"; do
-        if pidof "$core" > /dev/null 2>&1; then
-            return 0
-        fi
-    done
+# ═══════════════════════════════════════
+# 工具函数
+# ═══════════════════════════════════════
 
-    # 3. 端口 API 探测作为最后兜底
-    if curl -s --connect-timeout 1 "$API/version" > /dev/null 2>&1; then
-        return 0
+# 确保 curl 可用
+init_curl() {
+    if command -v curl > /dev/null 2>&1; then
+        CURL="curl"
+    elif [ -x "/data/adb/box/bin/curl" ]; then
+        CURL="/data/adb/box/bin/curl"
+    else
+        write_log "curl 未找到，无法执行更新"
+        return 1
     fi
+}
 
+# 带认证的 GET 请求
+api_get() {
+    if [ -n "$SECRET" ]; then
+        $CURL -s --connect-timeout 5 -H "Authorization: Bearer $SECRET" "${API}${1}"
+    else
+        $CURL -s --connect-timeout 5 "${API}${1}"
+    fi
+}
+
+# 带认证的 PUT 请求，返回 HTTP 状态码
+api_put() {
+    if [ -n "$SECRET" ]; then
+        $CURL -s -o /dev/null -w "%{http_code}" -X PUT --max-time 30 -H "Authorization: Bearer $SECRET" "${API}${1}" -d ""
+    else
+        $CURL -s -o /dev/null -w "%{http_code}" -X PUT --max-time 30 "${API}${1}" -d ""
+    fi
+}
+
+# 写入日志（保留最近 15 条）
+write_log() {
+    local entry="[$(date '+%m-%d %H:%M:%S')] $1"
+    if [ -f "$LOG_FILE" ]; then
+        echo "$entry" | cat - "$LOG_FILE" | head -n 15 > "${LOG_FILE}.tmp"
+        mv "${LOG_FILE}.tmp" "$LOG_FILE"
+    else
+        mkdir -p "$(dirname "$LOG_FILE")"
+        echo "$entry" > "$LOG_FILE"
+    fi
+}
+
+# ═══════════════════════════════════════
+# API 地址和密钥自动侦测
+# ═══════════════════════════════════════
+detect_api_config() {
+    # 从用户配置加载间隔
+    [ -f "$CONF_FILE" ] && . "$CONF_FILE" 2>/dev/null
+
+    # 从 Box settings.ini 获取核心信息
+    [ -f "/data/adb/box/settings.ini" ] && . /data/adb/box/settings.ini 2>/dev/null
+
+    local ec="" sc=""
+    case "$bin_name" in
+        mihomo)
+            [ -f "$mihomo_config" ] || return
+            ec=$(busybox awk '/^external-controller:/{print $2}' "$mihomo_config" 2>/dev/null | tr -d "'\"")
+            sc=$(busybox awk '/^secret:/{print $2}' "$mihomo_config" 2>/dev/null | tr -d "'\"")
+            ;;
+        sing-box)
+            [ -f "$sing_config" ] || return
+            ec=$(busybox awk -F'[:,]' '/"external_controller"/{print $2":"$3}' "$sing_config" 2>/dev/null | tr -d ' "')
+            sc=$(busybox awk -F'"' '/"secret"/{print $4}' "$sing_config" 2>/dev/null | head -1)
+            ;;
+    esac
+
+    [ -n "$ec" ] && API="http://$ec"
+    [ -n "$sc" ] && SECRET="$sc"
+}
+
+# ═══════════════════════════════════════
+# Box 运行状态检测（三保险）
+# ═══════════════════════════════════════
+check_box_running() {
+    [ -f "/data/adb/box/run/box.pid" ] && return 0
+    for core in mihomo sing-box xray v2fly hysteria; do
+        pidof "$core" > /dev/null 2>&1 && return 0
+    done
+    api_get "/version" > /dev/null 2>&1 && return 0
     return 1
 }
 
-while true; do
-    if [ -f "$CONF_FILE" ]; then
-        source "$CONF_FILE"
-    else
-        INTERVAL=$DEFAULT_INTERVAL
-        CORE_TYPE=""
+# ═══════════════════════════════════════
+# 核心：一键更新全部订阅
+# ═══════════════════════════════════════
+update_all_providers() {
+    # 获取全部 provider 列表
+    local resp
+    resp=$(api_get "/providers/proxies" 2>/dev/null)
+
+    if [ -z "$resp" ]; then
+        write_log "API无响应，跳过更新"
+        return 1
     fi
 
-    CURRENT_TIME=$(date "+%m-%d %H:%M:%S")
-
-    # 基础运行预检
-    if ! check_box_running; then
-        SUMMARY_LOG="[$CURRENT_TIME] Box未运行，跳过更新。"
-        [ -f "$LOG_FILE" ] && echo "$SUMMARY_LOG" | cat - "$LOG_FILE" | head -n 15 > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE" || echo "$SUMMARY_LOG" > "$LOG_FILE"
-        sleep $((INTERVAL * 60))
-        continue
+    # 提取 provider 名称
+    # 方法1: yq（精确）
+    local names="" yq_bin="/data/adb/box/bin/yq"
+    if [ -x "$yq_bin" ]; then
+        names=$(echo "$resp" | "$yq_bin" -p json '.providers | keys | .[]' 2>/dev/null)
     fi
 
-    # 映射有效性预检
-    if [ -z "$WATCH_MAP" ] || [ -z "$MAIN_CONF" ]; then
-        SUMMARY_LOG="[$CURRENT_TIME] 未配置机场映射，请前往 WebUI 设置。"
-        [ -f "$LOG_FILE" ] && echo "$SUMMARY_LOG" | cat - "$LOG_FILE" | head -n 15 > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE" || echo "$SUMMARY_LOG" > "$LOG_FILE"
-        sleep $((INTERVAL * 60))
-        continue
+    # 方法2: grep 回退（通过 vehicleType 字段过滤出真正的 provider）
+    if [ -z "$names" ]; then
+        names=$(echo "$resp" | tr '{' '\n' | grep '"vehicleType"' | grep -oE '"name"\s*:\s*"[^"]+"' | cut -d'"' -f4)
     fi
 
-    # 获取配置文件的基准目录 (用于处理相对路径 ./)
-    CONF_BASE=$(dirname "$MAIN_CONF")
-    SUMMARY_LOG="[$CURRENT_TIME]"
+    if [ -z "$names" ]; then
+        write_log "未发现订阅项目"
+        return 1
+    fi
 
-    # 解析映射并执行精准更新
-    # 映射格式: tag1|path1;tag2|path2
-    IFS=';'
-    for pair in $WATCH_MAP; do
-        TAG=$(echo "$pair" | cut -d'|' -f1)
-        REL_PATH=$(echo "$pair" | cut -d'|' -f2)
-        
-        # 处理相对路径转换为绝对路径
-        if [[ "$REL_PATH" == ./* ]]; then
-            ABS_PATH="$CONF_BASE/${REL_PATH#./}"
+    # 逐个触发更新
+    local ok=0 fail=0 total=0 detail=""
+    for name in $names; do
+        total=$((total + 1))
+        local code
+        code=$(api_put "/providers/proxies/$(echo "$name" | sed 's/ /%20/g')")
+        if [ "$code" = "204" ] || [ "$code" = "200" ]; then
+            ok=$((ok + 1))
+            detail="$detail $name:✓"
         else
-            ABS_PATH="$REL_PATH"
+            fail=$((fail + 1))
+            detail="$detail $name:✗($code)"
         fi
-
-        # 记录更新前时间戳
-        PRE_MTIME=0
-        [ -f "$ABS_PATH" ] && PRE_MTIME=$(stat -c %Y "$ABS_PATH")
-
-        # 触发 API 更新 (使用 TAG 作为标识)
-        STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$API/providers/proxies/$TAG" -d "" --max-time 30)
-        
-        # 等待同步并检查
-        sleep 1.5
-        POST_MTIME=0
-        [ -f "$ABS_PATH" ] && POST_MTIME=$(stat -c %Y "$ABS_PATH")
-
-        if { [ "$STATUS" = "204" ] || [ "$STATUS" = "200" ]; } && [ "$POST_MTIME" -gt "$PRE_MTIME" ]; then
-            SUMMARY_LOG="$SUMMARY_LOG $TAG:成功"
-        else
-            RESULT="失败($STATUS)"
-            [ "$POST_MTIME" -le "$PRE_MTIME" ] && RESULT="文件未刷新"
-            SUMMARY_LOG="$SUMMARY_LOG $TAG:$RESULT"
-        fi
+        sleep 0.5
     done
-    unset IFS
 
-    # 写入日志
-    if [ -f "$LOG_FILE" ]; then
-        echo "$SUMMARY_LOG" | cat - "$LOG_FILE" | head -n 15 > "${LOG_FILE}.tmp"
-        mv "${LOG_FILE}.tmp" "$LOG_FILE"
+    write_log "更新${ok}/${total}${detail}"
+
+    # 更新 module.prop 显示状态
+    local last_time
+    last_time=$(date "+%H:%M")
+    local interval_val="${INTERVAL:-$DEFAULT_INTERVAL}"
+    sed -i "s|^description=.*|description=[💎 运行中 | 订阅:${total}个 | 成功:${ok} | 周期:${interval_val}min | 更新:${last_time}] 基于 Clash API 的订阅自动更新|" "$MODDIR/module.prop"
+
+    [ "$fail" -gt 0 ] && return 1
+    return 0
+}
+
+# ═══════════════════════════════════════
+# 主入口
+# ═══════════════════════════════════════
+
+# 单次模式（由 action.sh 调用）
+if [ "$MODE" = "once" ]; then
+    init_curl || exit 1
+    detect_api_config
+    if check_box_running; then
+        update_all_providers
     else
-        echo "$SUMMARY_LOG" > "$LOG_FILE"
+        write_log "Box未运行，跳过更新"
     fi
-    
-    # 动态状态同步至 Magisk 列表 (Module Description)
-    COUNT=$(echo "$WATCH_MAP" | tr -cd ';' | wc -c)
-    COUNT=$((COUNT + 1))
-    [ -z "$WATCH_MAP" ] && COUNT=0
-    
-    LAST_TIME=$(date "+%H:%M")
-    DISPLAY_STATUS="[💎 运行中 | 监视:${COUNT}个 | 周期:${INTERVAL}min | 更新:${LAST_TIME}]"
-    
-    if ! check_box_running; then
-        DISPLAY_STATUS="[❌ Box未运行 | 更新器待命]"
-    fi
-    
-    # 物理更新 module.prop 以触发表带刷新
-    sed -i "s|^description=.*|description=${DISPLAY_STATUS} 为 Box for Root 提供的订阅自动更新扩展。|" "$MODDIR/module.prop"
+    exit 0
+fi
 
-    sleep $((INTERVAL * 60))
+# 守护进程模式
+until [ "$(getprop sys.boot_completed)" = "1" ]; do sleep 5; done
+sleep 15
+
+init_curl || exit 1
+
+while true; do
+    detect_api_config
+
+    if check_box_running; then
+        update_all_providers
+    else
+        write_log "Box未运行，跳过更新"
+        sed -i "s|^description=.*|description=[❌ Box未运行 | 更新器待命] 基于 Clash API 的订阅自动更新|" "$MODDIR/module.prop"
+    fi
+
+    sleep $(( ${INTERVAL:-$DEFAULT_INTERVAL} * 60 ))
 done
