@@ -165,44 +165,18 @@ update_all_providers() {
 
     local ok=0 fail=0 total=0 detail=""
     
-    # 替换换行或空格，处理成多行以便遍历
-    echo "$names" | while IFS= read -r name; do
+    # 采用 Here-Doc 绕过管道子 shell 限制，既完美支持空格名称，又能正确返回外层计数器
+    while IFS= read -r name; do
         [ -z "$name" ] && continue
         total=$((total + 1))
         debug_log "开始触发 Provider 更新: $name"
         
-        # 将特殊字符转化为 URL 编码，以避免 curl 问题
+        # 简单转换所有的常用空格
         local safe_name=$(echo "$name" | sed -e 's/ /%20/g' -e 's/|/%7C/g' -e 's/!/%21/g')
         
         local code
         code=$(api_put "/providers/proxies/$safe_name")
         debug_log "触发结果 $name -> HTTP Code: $code"
-        
-        if [ "$code" = "204" ] || [ "$code" = "200" ]; then
-            ok=$((ok + 1))
-            detail="$detail $name:✓"
-        else
-            fail=$((fail + 1))
-            detail="$detail $name:✗($code)"
-        fi
-        sleep 0.5
-    done
-    # 由于 while 管道会引发子 shell，我们需要使用临时文件或绕过管道，上面我们简化一下，或者使用此方法（修复子shell计数问题）：
-    
-    # 重新正确实现不产生子 shell 的计数
-    ok=0; fail=0; total=0; detail=""
-    for name in $(echo "$names" | tr '\n' '@' | sed 's/ /___/g'); do
-        # 恢复空格
-        name=$(echo "$name" | sed 's/___/ /g')
-        [ "$name" = "@" ] && continue
-        [ -z "$name" ] && continue
-        # 清除前面的符号
-        name=$(echo "$name" | tr -d '@')
-        [ -z "$name" ] && continue
-        
-        total=$((total + 1))
-        local safe_name=$(echo "$name" | sed -e 's/ /%20/g')
-        local code=$(api_put "/providers/proxies/$safe_name")
         
         if [ "$code" = "204" ] || [ "$code" = "200" ] || [ "$code" = "202" ]; then
             ok=$((ok + 1))
@@ -210,10 +184,12 @@ update_all_providers() {
         else
             fail=$((fail + 1))
             detail="$detail $name:✗($code)"
-            debug_log ">> 失败详情: URL 编码可能不准确，请求为 /providers/proxies/$safe_name"
+            debug_log ">> 失败详情: URL 编码可能不匹配，原始名称为 [$name]"
         fi
         sleep 0.5
-    done
+    done <<EOF
+$names
+EOF
 
     write_log "更新${ok}/${total}${detail}"
     debug_log "更新完成。总计: $total, 成功: $ok, 失败: $fail"
