@@ -321,10 +321,10 @@
             const btnAll = document.getElementById('btn-update-all');
             
             try {
-                // 探测版本
-                let verOutput = await fetchApi('/version');
-                if(!verOutput || !verOutput.includes('meta') && !verOutput.includes('version')) {
-                    throw new Error("Core API 无响应");
+                // 1. 测试基础连接与 curl 的执行情况
+                let versionCmdCheck = await fetchApi('/version');
+                if(!versionCmdCheck || (!versionCmdCheck.includes('meta') && !versionCmdCheck.includes('version'))) {
+                    throw new Error(`探测 /version 失败。\n当前所用 API地址: ${apiAddr}\n当前 Curl命令: ${curlBin}\n原生返回打印: [${versionCmdCheck}]`);
                 }
                 
                 statusEl.innerText = '已连接';
@@ -332,13 +332,17 @@
                 dotEl.style.background = 'var(--success)';
                 dotEl.style.boxShadow = '0 0 8px var(--success)';
 
-                // 取 providers
+                // 2. 抓取 providers
                 let provOutput = await fetchApi('/providers/proxies');
                 let data = null;
-                try { data = JSON.parse(provOutput); } catch(e) {}
+                try { 
+                    data = JSON.parse(provOutput); 
+                } catch(e) {
+                    throw new Error(`解析 Providers 失败。\n并非合法 JSON。\n原生内容截断前200字符: ${String(provOutput).substring(0, 200)}`);
+                }
 
                 if(data && data.providers) {
-                    const providers = Object.values(data.providers).filter(p => p.vehicleType !== 'Compatible'); // 过滤掉默认的 compatible
+                    const providers = Object.values(data.providers).filter(p => p.vehicleType !== 'Compatible'); 
                     
                     document.getElementById('provider-count').innerText = providers.length;
 
@@ -364,16 +368,19 @@
                         </div>`;
                     }).join('');
                 } else {
-                    listEl.innerHTML = '<div style="text-align: center; color: var(--danger); font-size: 0.85rem; padding: 20px;">无法解析订阅数据。Core 可能不支持此 API。</div>';
+                    throw new Error(`返回的结构里缺失 providers 字段。`);
                 }
 
             } catch(e) {
                 console.error(e);
-                statusEl.innerText = '连接失败 / 未运行';
+                statusEl.innerText = '执行崩溃，请检查日志框或下方';
                 statusEl.style.color = 'var(--danger)';
                 dotEl.style.background = 'var(--danger)';
                 dotEl.style.boxShadow = '0 0 8px var(--danger)';
                 btnAll.disabled = true;
+                
+                // 将极其详细的错误打在原本的列表里，方面排错！
+                listEl.innerHTML = `<div style="color: var(--danger); font-size: 0.8rem; padding: 12px; background: rgba(239, 68, 68, 0.1); border-radius: 8px; white-space: pre-wrap; word-break: break-all;"><b>[ 诊断报错 ]</b>\n${e.message}</div>`;
             }
         };
 
