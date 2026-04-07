@@ -39,9 +39,15 @@ fi
 ui_print "- 正在安装模块文件..."
 unzip -o "$ZIPFILE" -x 'META-INF/*' -d "$MODPATH" >&2
 
-# 初始化用户配置（不覆盖已有配置）
+# 适配 service.d 目录 (为了更好的兼容性，部分管理器可能需要)
+service_dir="/data/adb/service.d"
+[ "$KSU" = "true" ] && [ "$KSU_VER_CODE" -lt 10683 ] && service_dir="/data/adb/ksu/service.d"
+
+# 初始化或保护用户配置
 CONF_PATH="/storage/emulated/0/Android/sub_config.conf"
-if [ ! -f "$CONF_PATH" ]; then
+if [ -f "$CONF_PATH" ]; then
+  ui_print "- 检测到现有配置，正在保留..."
+else
   ui_print "- 创建默认订阅配置..."
   mkdir -p "$(dirname "$CONF_PATH")"
   echo 'INTERVAL=30' > "$CONF_PATH"
@@ -50,6 +56,7 @@ fi
 # 设置权限
 ui_print "- 设置文件权限..."
 set_perm_recursive $MODPATH 0 0 0755 0644
+set_perm_recursive $MODPATH/webroot 0 0 0755 0644
 set_perm $MODPATH/service.sh 0 0 0755
 set_perm $MODPATH/action.sh 0 0 0755
 set_perm $MODPATH/box-sub-up.sh 0 0 0755

@@ -333,8 +333,12 @@
 
         // 渲染勾选列表
         const renderMappingList = (list, type) => {
-            mappingContainer.style.display = 'block';
-            mappingList.innerHTML = list.map(item => `
+            const container = document.getElementById('mapping-container');
+            const listEl = document.getElementById('mapping-list');
+            if (!container || !listEl) return;
+            
+            container.style.display = 'block';
+            listEl.innerHTML = list.map(item => `
                 <div class="mapping-item">
                     <div>
                         <div class="mapping-tag">${item.tag} <small style="color:#10b981">[${type}]</small></div>
@@ -348,8 +352,6 @@
         };
 
         // DOM 元素引用
-        const mappingContainer = document.getElementById('mapping-container');
-        const mappingList = document.getElementById('mapping-list');
         const intervalInput = document.getElementById('interval-num');
         const logBox = document.getElementById('log-box');
         const boxVersionDisp = document.getElementById('box-version');
