@@ -13,7 +13,10 @@ fi
 
 ui_print " "
 ui_print "==========================================================="
-ui_print "==     Box Subscription Auto-Updater 安装中...            =="
+# 读取自身版本号
+MODVER=$(grep_prop version "$ZIPFILE/module.prop" 2>/dev/null)
+[ -z "$MODVER" ] && MODVER="v2.0.3-20260408-100500"
+ui_print "==     Box Subscription Auto-Updater $MODVER     =="
 ui_print "==========================================================="
 
 # 检测面具环境
