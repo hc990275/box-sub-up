@@ -250,6 +250,10 @@
         const CONF_PATH = '/storage/emulated/0/Android/sub_config.conf';
         const LOG_PATH = '/storage/emulated/0/Android/sub.log';
 
+        // HTML 转义工具，防止 Provider 名称中的特殊字符破坏 DOM 或引发 XSS
+        const escapeHtml = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+        let providersList = [];
+
         // 探测 curl 工具，因为大量国产源生安卓没有自带 curl
         const initCurl = async () => {
             let res = await shellExec('command -v curl || echo "NULL"');
@@ -261,44 +265,71 @@
             }
         };
 
-        // 侦测 API 信息
+        // 侦测 API 信息 — 直接用 shell 原生 source 解析，杜绝 JS 变量展开失败
         const detectApi = async () => {
             try {
-                const settings = await shellExec('cat /data/adb/box/settings.ini 2>/dev/null');
-                if(!settings) throw new Error("无 settings.ini");
+                // NOTE: 让 shell 自己 source settings.ini 展开所有变量（box_dir、name_mihomo_config 等），
+                // 再用 awk 从真实配置文件中提取 API 地址和密钥，最后以 KEY=VALUE 格式输出。
+                const result = await shellExec(`
+                    bb_awk="awk"
+                    [ -x "/data/adb/magisk/busybox" ] && bb_awk="/data/adb/magisk/busybox awk"
+                    [ -x "/data/adb/ksu/bin/busybox" ] && bb_awk="/data/adb/ksu/bin/busybox awk"
 
-                const binM = settings.match(/^bin_name="([^"]+)"/m);
-                const binName = binM ? binM[1] : 'Unknown';
+                    [ ! -f "/data/adb/box/settings.ini" ] && echo "ERR=no_settings" && exit 0
+                    . /data/adb/box/settings.ini 2>/dev/null
 
-                let ec = '', sc = '';
-                if(binName === 'mihomo') {
-                    const cfgPathM = settings.match(/^mihomo_config="([^"]+)"/m);
-                    if(cfgPathM) {
-                        const pathMatch = cfgPathM[1].replace('${box_dir}', '/data/adb/box').replace('${name_mihomo_config}', 'mihomo.yaml');
-                        const cfg = await shellExec(`cat "${pathMatch}" 2>/dev/null`);
-                        let ecm = cfg.match(/^external-controller:[\s'"]+([^'"\s]+)/m);
-                        if(ecm) ec = ecm[1];
-                        let scm = cfg.match(/^secret:[\s'"]+([^'"\s]+)/m);
-                        if(scm) sc = scm[1];
-                    }
-                } else if(binName === 'sing-box') {
-                    const cfgPathM = settings.match(/^sing_config="([^"]+)"/m);
-                    if(cfgPathM) {
-                        const pathMatch = cfgPathM[1].replace('${box_dir}', '/data/adb/box').replace('${name_sing_config}', 'singbox-config.json');
-                        const cfg = await shellExec(`cat "${pathMatch}" 2>/dev/null`);
-                        let ecm = cfg.match(/"external_controller"\s*:\s*"([^"]+)"/);
-                        if(ecm) ec = ecm[1];
-                        let scm = cfg.match(/"secret"\s*:\s*"([^"]+)"/);
-                        if(scm) sc = scm[1];
-                    }
-                }
+                    echo "BIN=$bin_name"
 
-                if(ec) apiAddr = ec.replace(/^127\.0\.0\.1/, '127.0.0.1').replace(/^0\.0\.0\.0/, '127.0.0.1'); 
+                    case "$bin_name" in
+                        mihomo)
+                            if [ -f "$mihomo_config" ]; then
+                                echo "CFG=$mihomo_config"
+                                ec=$($bb_awk '/^external-controller:/{print $2}' "$mihomo_config" 2>/dev/null | tr -d "'\\"")
+                                sc=$($bb_awk '/^secret:/{print $2}' "$mihomo_config" 2>/dev/null | tr -d "'\\"")
+                                [ -n "$ec" ] && echo "EC=$ec"
+                                [ -n "$sc" ] && echo "SC=$sc"
+                            else
+                                echo "ERR=config_not_found"
+                            fi
+                            ;;
+                        sing-box)
+                            if [ -f "$sing_config" ]; then
+                                echo "CFG=$sing_config"
+                                ec=$($bb_awk -F'[:,]' '/\\"external_controller\\"/{print $2":"$3}' "$sing_config" 2>/dev/null | tr -d ' "')
+                                sc=$($bb_awk -F'"' '/\\"secret\\"/{print $4}' "$sing_config" 2>/dev/null | head -1)
+                                [ -n "$ec" ] && echo "EC=$ec"
+                                [ -n "$sc" ] && echo "SC=$sc"
+                            else
+                                echo "ERR=config_not_found"
+                            fi
+                            ;;
+                        *)
+                            echo "ERR=unsupported_core_$bin_name"
+                            ;;
+                    esac
+                `);
+
+                console.log('detectApi shell output:', result);
+
+                // 解析 shell 输出的 KEY=VALUE 行
+                const get = (key) => { const m = result.match(new RegExp('^' + key + '=(.+)$', 'm')); return m ? m[1].trim() : ''; };
+
+                const errMsg = get('ERR');
+                const binName = get('BIN') || '未知';
+                const ec = get('EC');
+                const sc = get('SC');
+                const cfgPath = get('CFG');
+
+                if(ec) apiAddr = ec.replace(/0\.0\.0\.0/g, '127.0.0.1');
                 if(sc) apiSecret = sc;
 
-                document.getElementById('api-details').innerText = `${apiAddr} (Secret: ${apiSecret?'已配置':'无'})`;
+                let detailText = `${apiAddr} (核心: ${binName} | Secret: ${apiSecret ? '已配置' : '无'})`;
+                if(errMsg) detailText += ` | ⚠ ${errMsg}`;
+                if(cfgPath) detailText += ` | 配置: ${cfgPath}`;
+
+                document.getElementById('api-details').innerText = detailText;
                 document.getElementById('api-details').style.display = 'block';
-                return true;
+                return !errMsg;
             } catch(e) {
                 console.error("Detect API info err:", e);
                 return false;
@@ -353,17 +384,18 @@
                     }
 
                     btnAll.disabled = false;
-                    listEl.innerHTML = providers.map(p => {
+                    providersList = providers;
+                    listEl.innerHTML = providers.map((p, idx) => {
                         let timeStr = p.updatedAt ? new Date(p.updatedAt).toLocaleString() : '未知';
                         return `
-                        <div class="provider-item" id="prov-${p.name}">
+                        <div class="provider-item" data-idx="${idx}">
                             <div class="provider-header">
-                                <span class="provider-name">${p.name}</span>
-                                <button class="btn-update-single" onclick="updateSingle('${p.name}')">更新</button>
+                                <span class="provider-name">${escapeHtml(p.name)}</span>
+                                <button class="btn-update-single" data-idx="${idx}">更新</button>
                             </div>
                             <div class="provider-meta">
-                                <span>类型: ${p.vehicleType}</span>
-                                <span>上次刷新: <span class="prov-time">${timeStr}</span></span>
+                                <span>类型: ${escapeHtml(p.vehicleType || 'N/A')}</span>
+                                <span>上次刷新: <span class="prov-time">${escapeHtml(timeStr)}</span></span>
                             </div>
                         </div>`;
                     }).join('');
@@ -380,7 +412,7 @@
                 btnAll.disabled = true;
                 
                 // 将极其详细的错误打在原本的列表里，方面排错！
-                listEl.innerHTML = `<div style="color: var(--danger); font-size: 0.8rem; padding: 12px; background: rgba(239, 68, 68, 0.1); border-radius: 8px; white-space: pre-wrap; word-break: break-all;"><b>[ 诊断报错 ]</b>\n${e.message}</div>`;
+                listEl.innerHTML = `<div style="color: var(--danger); font-size: 0.8rem; padding: 12px; background: rgba(239, 68, 68, 0.1); border-radius: 8px; white-space: pre-wrap; word-break: break-all;"><b>[ 诊断报错 ]</b>\n${escapeHtml(e.message)}</div>`;
             }
         };
 
@@ -404,13 +436,16 @@
             }, 3000);
         };
 
-        // 更新单个
-        window.updateSingle = async (name) => {
-            const btn = document.querySelector(`#prov-${CSS.escape(name)} .btn-update-single`);
+        // 更新单个 Provider（通过索引定位，避免名称特殊字符导致选择器崩溃）
+        const updateSingle = async (idx) => {
+            const p = providersList[idx];
+            if (!p) return;
+            const btn = document.querySelector(`.provider-item[data-idx="${idx}"] .btn-update-single`);
+            if (!btn) return;
             btn.innerText = '更新中...';
             btn.disabled = true;
             
-            let res = await fetchApi('/providers/proxies/' + encodeURIComponent(name), 'PUT');
+            let res = await fetchApi('/providers/proxies/' + encodeURIComponent(p.name), 'PUT');
             let code = res.split('\n').pop();
             
             if(code === '204' || code === '200') {
@@ -430,6 +465,12 @@
                 loadLogs();
             }, 3000);
         };
+
+        // 事件委托：Provider 列表的按钮点击
+        document.getElementById('provider-list').addEventListener('click', (e) => {
+            const btn = e.target.closest('.btn-update-single');
+            if (btn && !btn.disabled) updateSingle(parseInt(btn.dataset.idx));
+        });
 
         // 保存配置
         document.getElementById('btn-save').onclick = async () => {
@@ -456,7 +497,7 @@
             let log = await shellExec(`cat ${LOG_PATH} 2>/dev/null`);
             const logBox = document.getElementById('log-box');
             if(log) {
-                logBox.innerHTML = log.split('\n').filter(l=>l.trim()).map(l => `<div class="log-line">${l}</div>`).join('');
+                logBox.innerHTML = log.split('\n').filter(l=>l.trim()).map(l => `<div class="log-line">${escapeHtml(l)}</div>`).join('');
                 logBox.scrollTop = logBox.scrollHeight;
             } else {
                 logBox.innerHTML = '<div class="log-line">暂无运行日志</div>';
