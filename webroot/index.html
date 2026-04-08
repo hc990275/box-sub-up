@@ -228,12 +228,12 @@
                 if (window.ksu && typeof window.ksu.exec === 'function') {
                     let res = await window.ksu.exec(cmd);
                     if (typeof res === 'string') { try { res = JSON.parse(res); } catch(e){} }
-                    return (res && typeof res.stdout !== 'undefined') ? res.stdout : String(res);
+                    return res ? (res.out !== undefined ? res.out : (res.stdout !== undefined ? res.stdout : JSON.stringify(res))) : String(res);
                 }
                 if (window.apatch && typeof window.apatch.exec === 'function') {
                     let res = await window.apatch.exec(cmd);
                     if (typeof res === 'string') { try { res = JSON.parse(res); } catch(e){} }
-                    return (res && typeof res.stdout !== 'undefined') ? res.stdout : String(res);
+                    return res ? (res.out !== undefined ? res.out : (res.stdout !== undefined ? res.stdout : JSON.stringify(res))) : String(res);
                 }
                 // 回退到 Box 标准 REST 层
                 const resp = await fetch('/api/exec?cmd=' + encodeURIComponent(cmd));
@@ -277,6 +277,9 @@
 
                     [ ! -f "/data/adb/box/settings.ini" ] && echo "ERR=no_settings" && exit 0
                     . /data/adb/box/settings.ini 2>/dev/null
+                    bin_name=$(echo "$bin_name" | tr -d '\r')
+                    mihomo_config=$(echo "$mihomo_config" | tr -d '\r')
+                    sing_config=$(echo "$sing_config" | tr -d '\r')
 
                     echo "BIN=$bin_name"
 

@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Box-sub-up v2.0.5 — 基于 Clash API 的订阅自动更新守护进程
+# Box-sub-up v2.0.7 — 基于 Clash API 的订阅自动更新守护进程
 # 开启了详细的 Debug 日志记录模式：/storage/emulated/0/Android/sub_debug.log
 
 MODDIR=${0%/*}
@@ -85,6 +85,9 @@ detect_api_config() {
     fi
 
     . /data/adb/box/settings.ini 2>/dev/null
+    bin_name=$(echo "$bin_name" | tr -d '\r')
+    mihomo_config=$(echo "$mihomo_config" | tr -d '\r')
+    sing_config=$(echo "$sing_config" | tr -d '\r')
     debug_log "探测到 core_name=${bin_name}"
 
     local ec="" sc=""
@@ -191,7 +194,7 @@ update_all_providers() {
 $names
 EOF
 
-    write_log "更新${ok}/${total}${detail}"
+    write_log "后台自动刷新完成 (成功:${ok}/${total})"
     debug_log "更新完成。总计: $total, 成功: $ok, 失败: $fail"
 
     local interval_val="${INTERVAL:-$DEFAULT_INTERVAL}"

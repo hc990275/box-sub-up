@@ -1,7 +1,7 @@
 id=box-sub-up
 name=Box Subscription Auto-Updater
-version=v2.0.5
-versionCode=2026040801
+version=v2.0.7
+versionCode=2026040803
 author=Antigravity
 description=[钻石] 基于 Clash API 的订阅全自动更新扩展，内置完整可视化管理台。
 webUi=true
