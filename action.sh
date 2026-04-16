@@ -7,14 +7,21 @@ LOG_FILE="/storage/emulated/0/Android/sub.log"
 echo "━━━ Box-sub-up 手动更新 ━━━"
 echo ""
 
+# 显示当前检测到的核心类型
+if [ -f "/data/adb/box/settings.ini" ]; then
+    core=$(grep '^bin_name=' /data/adb/box/settings.ini | head -1 | cut -d'"' -f2)
+    echo "📌 当前核心类型: ${core:-未知}"
+fi
+echo ""
+
 # 执行单次更新
-echo "⏳ 正在通过 Clash API 更新全部订阅..."
+echo "⏳ 正在通过 Clash API 刷新全部订阅..."
 sh "$MODDIR/box-sub-up.sh" --once
 echo ""
 
 # 显示最近日志
 if [ -f "$LOG_FILE" ]; then
-    echo "━━━ 最近更新记录 ━━━"
+    echo "━━━ 最近 10 条更新记录 ━━━"
     cat "$LOG_FILE"
 else
     echo "暂无运行记录"

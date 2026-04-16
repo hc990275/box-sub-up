@@ -1,8 +1,8 @@
 id=box-sub-up
 name=Box Subscription Auto-Updater
-version=v2.0.7
-versionCode=2026040803
+version=v2.1.1
+versionCode=2026041602
 author=Antigravity
-description=[钻石] 基于 Clash API 的订阅全自动更新扩展，内置完整可视化管理台。
+description=[💎 待机中] 基于 Clash API 的订阅全自动更新 | 自动检测核心类型 (mihomo/sing-box)
 webUi=true
 updateJson=https://raw.githubusercontent.com/hc990275/box-sub-up/main/update.json

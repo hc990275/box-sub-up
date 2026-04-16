@@ -46,15 +46,7 @@ unzip -o "$ZIPFILE" -x 'META-INF/*' -d "$MODPATH" >&2
 service_dir="/data/adb/service.d"
 [ "$KSU" = "true" ] && [ "$KSU_VER_CODE" -lt 10683 ] && service_dir="/data/adb/ksu/service.d"
 
-# 初始化或保护用户配置
-CONF_PATH="/storage/emulated/0/Android/sub_config.conf"
-if [ -f "$CONF_PATH" ]; then
-  ui_print "- 检测到现有配置，正在保留..."
-else
-  ui_print "- 创建默认订阅配置..."
-  mkdir -p "$(dirname "$CONF_PATH")"
-  echo 'INTERVAL=30' > "$CONF_PATH"
-fi
+
 
 # 设置权限
 ui_print "- 设置文件权限..."
